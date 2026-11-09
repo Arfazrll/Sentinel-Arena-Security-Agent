@@ -81,12 +81,29 @@ simulated engagements. The same thing is a one-click flow in the web app's
 **Assessment** page (paste a target, pick a depth, watch progress, get the plan)
 and an MCP tool (below).
 
-**The target.** By default a campaign runs against the bundled sandbox
-(127.0.0.1) — no setup, fully safe. To assess a host you own, prove ownership
-first (DNS TXT / well-known file, via the gate or the MCP `verify_target` tool),
-then pass `--i-own-this`. An unproven external target is **refused** — the
-authorization gate is never bypassed, and external assessment is non-destructive,
-observation-only. See [`docs/SAFETY.md`](docs/SAFETY.md).
+**Two kinds of target.**
+
+- **Sandbox (default, 127.0.0.1)** — the full red-vs-blue matrix above. No setup.
+- **A host you own** — a real, **observation-only posture scan**: ownership is
+  re-verified *live* right before the scan, then a single `GET /` is analyzed for
+  header weaknesses (missing security headers, HSTS, cookie flags, version
+  banners, CORS, referrer policy) — the same prioritized vulnerabilities-and-fixes
+  verdict. **No payloads, no path fuzzing, no arena.** If ownership can't be
+  proven, nothing is scanned.
+
+The web **Assessment** page walks the ownership flow (get a token → publish a DNS
+TXT / `.well-known` file / meta tag → check → scan). Programmatically:
+
+```
+POST /targets/verify?host=…          # issue the ownership challenge
+POST /targets/check?host=…&method=…  # verify the published proof, live
+POST /assessments/external?host=…    # re-verify + run the header scan
+```
+
+or the MCP tools `verify_target` → `check_target` → `assess_external_target`. An
+unproven external target is **refused** — the authorization gate is never
+bypassed. Live DNS verification needs the `verify` extra (`dnspython`); well-known
+and meta-tag work without it. See [`docs/SAFETY.md`](docs/SAFETY.md).
 
 ## Drive it from an MCP client
 
@@ -99,15 +116,34 @@ python -m sentinel_arena.mcp.server        # stdio transport
 ```
 
 Tools: `list_scenarios`, `list_agents`, `verify_target` (issue an ownership
-challenge for a host), and `run_assessment` (run a campaign → prioritized
-vulnerabilities + mitigations). The surface is **orchestration and reporting
-only** — it exposes no attack primitive and cannot make the platform act against
-a host the gate has not cleared.
+challenge), `check_target` (verify the published proof live), `run_assessment`
+(sandbox campaign → prioritized verdict), and `assess_external_target`
+(observation-only header scan of a host you own, after live re-verification). The
+surface is **orchestration and reporting only** — it exposes no attack primitive
+and cannot make the platform act against a host the gate has not cleared.
 
 ## Scale & enterprise
 
-How this goes from one node to a multi-tenant service for tens of thousands of
-users — caching, load balancing, Postgres (with an append-only audit ledger),
+Persistence is a pluggable, **multi-tenant** `Store` (`sentinel_arena/store/`):
+the same models run on the filesystem (default), SQLite, or **Postgres** — flip
+`ARENA_DB_URL` to a Postgres URL and every API replica shares one database, no
+code change. Every record is scoped by `tenant_id` (`X-Tenant-Id` header), and
+both backends pass the same contract suite.
+
+```bash
+# default: JSON on disk              (FilesystemStore)
+uvicorn sentinel_arena.api.server:app
+
+# local SQL file                     (SqlStore, SQLite)
+ARENA_STORE=sql uvicorn sentinel_arena.api.server:app
+
+# production                         (SqlStore, Postgres)
+uv pip install -e ".[db]"            # + a psycopg driver
+ARENA_DB_URL=postgresql+psycopg://user:pw@host/sentinel \
+  uvicorn sentinel_arena.api.server:app
+```
+
+The rest of the path to tens of thousands of users — caching, load balancing,
 Redis queue + worker tier, per-job sandboxes, SSO/RBAC, secrets vault and
 observability — is written up, with a clear line between what ships today and the
 target architecture, in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
@@ -216,6 +252,12 @@ A full end-to-end vertical slice, built in the brief's milestone order:
   (**Assessment** page) and MCP all sit on it.
 - **MCP server** (`mcp/server.py`) — orchestration + reporting tools over stdio;
   no attack primitive, gate never bypassed.
+- **Persistence layer** (`store/`) — one `Store` interface, filesystem + SQL
+  (SQLite/Postgres via SQLAlchemy) backends, multi-tenant (`tenant_id`), tested
+  for parity across both.
+- **External posture scan** (`external_scan.py`, `detect/external.py`) —
+  observation-only header assessment of a host you own, gated by a live ownership
+  re-check; reuses the campaign verdict shape.
 - **LLM agents** (`agents/llm.py`) — provider-agnostic, plug into the same
   interface; Anthropic adapter behind the `llm` extra.
 - **Docker-backed range** (`range/docker_runner.py` + `Dockerfile` + compose) —

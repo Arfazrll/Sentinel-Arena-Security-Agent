@@ -53,9 +53,22 @@ own axis: the API on request volume, the workers on simulation volume.
 
 ## 2. What is implemented today
 
-- **Stateless API** (`sentinel_arena/api/server.py`) — every durable fact is read
-  back from disk under `$ARENA_DATA_DIR`, so a second replica can serve the same
-  history. Engagement/campaign history reloads on boot.
+- **Pluggable persistence** (`sentinel_arena/store/`) — one `Store` interface,
+  two interchangeable backends selected by env:
+  - `FilesystemStore` — JSON under `$ARENA_DATA_DIR/store` (default, no deps).
+  - `SqlStore` — SQLAlchemy models that run **unchanged on SQLite and Postgres**.
+    Set `ARENA_DB_URL=postgresql+psycopg://…` (and install `.[db]` + a psycopg
+    driver) to point every API replica at one shared database; `ARENA_STORE=sql`
+    with no URL uses a local SQLite file. Both backends pass the same contract
+    suite (`tests/test_store.py`). `/healthz` reports which one is live.
+- **Multi-tenancy from the foundation** — every record (tenants, targets,
+  campaigns, findings, engagement index) is scoped by `tenant_id` (default
+  `default`); the API reads it from the `X-Tenant-Id` header. Postgres RLS then
+  enforces the same boundary at the database (see §4).
+- **Stateless API** (`sentinel_arena/api/server.py`) — durable state lives in the
+  store, so a second replica serves the same history. Heavy per-engagement
+  artifacts (events/audit JSONL, reports) stay as files; the store holds the
+  metadata and a pointer — the standard blob pattern.
 - **In-process job runner** — engagements and campaigns run on daemon threads
   with a concurrency cap (`MAX_CONCURRENT`). Each engagement stands up its **own
   ephemeral range** on its own port, so runs are already isolated from each other.
@@ -86,7 +99,9 @@ single-node implementation for a distributed one touches one file:
 ## 4. Database (Postgres)
 
 The filesystem store is fine for one node; a fleet needs a shared transactional
-store. Target schema:
+store. The SQLAlchemy models in `sentinel_arena/store/sql.py` already define the
+core of this schema (tenants, targets, campaigns, vulnerabilities, engagement
+index) and run on Postgres today. Full target schema:
 
 - `tenants`, `users`, `memberships` — multi-tenancy and RBAC.
 - `targets` — one row per (tenant, host) with its **ownership-proof** state and
@@ -182,7 +197,9 @@ Beyond the authorization gate (the product's core), the *service* is hardened:
 
 ## 9. Rollout sequence (suggested)
 
-1. Lift persistence to Postgres behind the existing `$ARENA_DATA_DIR` seam.
+1. ~~Lift persistence behind a store seam; implement SQL (SQLite + Postgres).~~
+   **Done** (`sentinel_arena/store/`). Production flips `ARENA_DB_URL` to Postgres
+   and adds RLS; no application change.
 2. Move job execution to a Redis queue + a separate worker image (API stops
    running engagements in-process).
 3. Add the proof cache and the WS pub/sub relay.

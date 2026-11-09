@@ -20,7 +20,8 @@ def _tool_names():
 
 def test_server_exposes_expected_tools():
     names = _tool_names()
-    assert names == {"list_scenarios", "list_agents", "verify_target", "run_assessment"}
+    assert names == {"list_scenarios", "list_agents", "verify_target",
+                     "check_target", "assess_external_target", "run_assessment"}
 
 
 def test_no_raw_attack_tool_is_exposed():

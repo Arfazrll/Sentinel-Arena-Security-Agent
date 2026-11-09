@@ -79,6 +79,41 @@ def test_external_target_allowed_when_ownership_asserted():
     assert res.runs > 0
 
 
+def test_api_campaign_persists_to_store_per_tenant(tmp_path, monkeypatch):
+    """A campaign started through the API lands in the durable store, scoped to
+    its tenant, and is still retrievable after it leaves the in-memory job map."""
+    import time
+
+    monkeypatch.setenv("ARENA_DATA_DIR", str(tmp_path))
+    from sentinel_arena import store as store_mod
+    store_mod.reset_store()
+    try:
+        import sentinel_arena.api.server as srv
+
+        # Scope to one scenario so the job finishes fast and deterministically
+        # even on a loaded machine (avoids a poll-timeout flake).
+        out = srv.start_campaign(target="127.0.0.1", depth="quick",
+                                 scenarios_csv="shop-01", label="api",
+                                 x_tenant_id="t1")
+        st = {"status": "running"}
+        for _ in range(300):  # up to ~90s; normally a few seconds
+            st = srv.campaign_status(out["id"])
+            if st["status"] != "running":
+                break
+            time.sleep(0.3)
+        assert st["status"] == "done", f"campaign did not finish: {st.get('status')}"
+
+        rec = store_mod.get_store().get_campaign(out["id"])
+        assert rec is not None and rec["tenant_id"] == "t1"
+        assert rec["vulnerabilities"], "findings should persist with the campaign"
+        assert any(c["id"] == out["id"]
+                   for c in srv.list_campaigns(limit=100, x_tenant_id="t1"))
+        # Another tenant must not see it.
+        assert srv.list_campaigns(limit=100, x_tenant_id="t2") == []
+    finally:
+        store_mod.reset_store()
+
+
 def test_save_campaign_writes_json_and_markdown(tmp_path):
     res = run_campaign(CampaignPlan(depth="quick", label="Report me"))
     save_campaign(res, tmp_path)

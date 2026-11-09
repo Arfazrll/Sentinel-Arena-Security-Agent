@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 try:
-    from fastapi import FastAPI, HTTPException, Query, WebSocket, WebSocketDisconnect
+    from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, PlainTextResponse
 except Exception as e:  # pragma: no cover
@@ -41,6 +41,8 @@ from ..engine.killswitch import KillSwitch
 from ..report.compliance import enrich
 from ..report.exports import to_csv, to_navigator_layer, to_sarif
 from ..scenarios.loader import list_scenarios, load_scenario
+from ..store import DEFAULT_TENANT, get_store
+from ..store.base import campaign_to_record
 
 app = FastAPI(title="Sentinel Arena", version=__version__)
 # The Next.js dev server (localhost:3000) talks to this API cross-origin.
@@ -181,6 +183,17 @@ def _launch(eid: str, scenario: str, seed: int, red: str, blue: str,
         res = _read_json(art.out_dir / "result.json")
         state["result"] = _result_brief(eid, res)
         state["status"] = "stopped" if state["kill"].tripped else "done"
+        try:
+            sb = res["scoreboard"]
+            get_store().save_engagement({
+                "id": eid, "tenant_id": state.get("tenant_id", DEFAULT_TENANT),
+                "scenario": scenario, "seed": seed, "red": red, "blue": blue,
+                "status": state["status"], "resilience": sb["resilience"],
+                "flag_captured": sb["red"]["flag_captured"],
+                "created_at": state.get("created_at"), "finished_at": _now(),
+                "artifacts_dir": str(art.out_dir)})
+        except Exception:  # indexing is best-effort; artifacts are the source of truth
+            pass
     except Exception as e:  # pragma: no cover
         state["error"] = str(e)
         state["result"] = {"error": str(e)}
@@ -201,10 +214,14 @@ def index() -> str:
 @app.get("/healthz")
 def healthz():
     running = sum(1 for s in _ENGAGEMENTS.values() if s["status"] == "running")
+    try:
+        store_backend = type(get_store()).__name__
+    except Exception:
+        store_backend = "unknown"
     return {"status": "ok", "version": __version__,
             "uptime_s": round(time.time() - _STARTED, 1),
             "engagements": len(_ENGAGEMENTS), "running": running,
-            "max_concurrent": MAX_CONCURRENT}
+            "max_concurrent": MAX_CONCURRENT, "store": store_backend}
 
 
 @app.get("/agents")
@@ -460,19 +477,19 @@ def benchmark_status(job_id: str):
 
 
 # --- campaigns: assess a target across a matrix -> one verdict -------------
-def _load_campaign_history() -> None:
-    if not CAMP_ROOT.exists():
-        return
-    for child in sorted(CAMP_ROOT.iterdir()):
-        data = _read_json(child / "campaign.json")
-        if data and data.get("id") not in _CAMPAIGNS:
-            _CAMPAIGNS[data["id"]] = {
-                "id": data["id"], "status": "done", "done": data["runs"],
-                "total": data["runs"], "current": "", "result": data,
-                "finished_at": data.get("created_at", "")}
+# Finished campaigns live in the durable Store (filesystem or Postgres); the
+# in-memory map holds only live progress for running jobs.
+def _campaign_brief(rec: dict) -> dict:
+    return {"id": rec["id"], "status": rec.get("status", "done"),
+            "target": rec.get("target"), "depth": rec.get("depth"),
+            "label": rec.get("label"), "done": rec.get("runs"),
+            "total": rec.get("runs"), "finished_at": rec.get("created_at"),
+            "grade": rec.get("posture_grade"),
+            "worst_resilience": rec.get("worst_resilience"),
+            "findings": len(rec.get("vulnerabilities", []))}
 
 
-def _run_campaign_job(job_id: str, plan) -> None:
+def _run_campaign_job(job_id: str, plan, tenant_id: str) -> None:
     from ..campaign import run_campaign, save_campaign
 
     job = _CAMPAIGNS[job_id]
@@ -482,7 +499,9 @@ def _run_campaign_job(job_id: str, plan) -> None:
 
     try:
         res = run_campaign(plan, on_progress=progress, campaign_id=job_id)
-        save_campaign(res, CAMP_ROOT / job_id)
+        save_campaign(res, CAMP_ROOT / job_id)  # human-readable .md for download
+        record = campaign_to_record(res, tenant_id=tenant_id, status="done")
+        get_store().save_campaign(record)       # durable, multi-tenant
         job["result"] = res.model_dump()
         job["status"] = "done"
         job["finished_at"] = _now()
@@ -494,7 +513,8 @@ def _run_campaign_job(job_id: str, plan) -> None:
 @app.post("/campaigns")
 def start_campaign(target: str = "127.0.0.1", depth: str = "standard",
                    scenarios_csv: str = "", label: str = "",
-                   i_own_this: bool = False):
+                   i_own_this: bool = False,
+                   x_tenant_id: str = Header(default=DEFAULT_TENANT)):
     from ..campaign import CampaignPlan
 
     if depth not in ("quick", "standard", "deep"):
@@ -511,47 +531,150 @@ def start_campaign(target: str = "127.0.0.1", depth: str = "standard",
         total = plan.total_runs()
     except ValueError as e:
         raise HTTPException(400, str(e))
+    get_store().ensure_tenant(x_tenant_id)
     job_id = "camp-" + uuid.uuid4().hex[:10]
     _CAMPAIGNS[job_id] = {"id": job_id, "status": "running", "target": target,
-                          "depth": depth, "label": label, "done": 0,
-                          "total": total, "current": "", "result": None,
+                          "depth": depth, "label": label, "tenant_id": x_tenant_id,
+                          "done": 0, "total": total, "current": "", "result": None,
                           "started_at": _now()}
-    threading.Thread(target=_run_campaign_job, args=(job_id, plan),
+    threading.Thread(target=_run_campaign_job, args=(job_id, plan, x_tenant_id),
                      daemon=True).start()
     return {"id": job_id, "total": total}
 
 
 @app.get("/campaigns")
-def list_campaigns(limit: int = Query(100, ge=1, le=500)):
-    _load_campaign_history()
-    jobs = sorted(_CAMPAIGNS.values(),
-                  key=lambda j: j.get("finished_at") or j.get("started_at") or "",
-                  reverse=True)
-    return [{k: j.get(k) for k in ("id", "status", "target", "depth", "label",
-                                   "done", "total", "started_at", "finished_at")}
-            | ({"grade": j["result"]["posture_grade"],
-                "worst_resilience": j["result"]["worst_resilience"],
-                "findings": len(j["result"]["vulnerabilities"])}
-               if j.get("result") else {})
-            for j in jobs[:limit]]
+def list_campaigns(limit: int = Query(100, ge=1, le=500),
+                   x_tenant_id: str = Header(default=DEFAULT_TENANT)):
+    # Running jobs (in memory) for this tenant, then finished ones (durable).
+    running = [{k: j.get(k) for k in ("id", "status", "target", "depth", "label",
+                                      "done", "total", "started_at")}
+               for j in _CAMPAIGNS.values()
+               if j["status"] == "running" and j.get("tenant_id") == x_tenant_id]
+    done = [_campaign_brief(r) for r in get_store().list_campaigns(x_tenant_id, limit)]
+    return (running + done)[:limit]
 
 
 @app.get("/campaigns/{job_id}")
 def campaign_status(job_id: str):
-    _load_campaign_history()
     job = _CAMPAIGNS.get(job_id)
-    if job is None:
+    if job is not None:
+        return job
+    rec = get_store().get_campaign(job_id)
+    if rec is None:
         raise HTTPException(404, "unknown campaign")
-    return job
+    return {"id": rec["id"], "status": rec.get("status", "done"),
+            "target": rec.get("target"), "depth": rec.get("depth"),
+            "label": rec.get("label"), "done": rec.get("runs"),
+            "total": rec.get("runs"), "current": "",
+            "finished_at": rec.get("created_at"), "result": rec}
 
 
 @app.get("/campaigns/{job_id}/report", response_class=PlainTextResponse)
 def campaign_report(job_id: str):
-    job = _CAMPAIGNS.get(job_id)
-    if job is None or not job.get("result"):
-        raise HTTPException(404, "no finished campaign with that id")
     from ..campaign import CampaignResult, to_markdown
-    return to_markdown(CampaignResult.model_validate(job["result"]))
+
+    job = _CAMPAIGNS.get(job_id)
+    result = job.get("result") if job else None
+    if result is None:
+        result = get_store().get_campaign(job_id)
+    if result is None:
+        raise HTTPException(404, "no finished campaign with that id")
+    return to_markdown(CampaignResult.model_validate(result))
+
+
+# --- targets + external (observation-only) assessment ----------------------
+_METHODS = {"dns_txt", "well_known_file", "meta_tag"}
+
+
+def _tenant_user(tenant_id: str) -> str:
+    return f"tenant:{tenant_id}"
+
+
+@app.post("/targets/verify")
+def target_verify(host: str, x_tenant_id: str = Header(default=DEFAULT_TENANT)):
+    """Issue an ownership challenge for a host (step 1). Records a pending target.
+    Runs nothing against the host - it only returns the proof to publish."""
+    from ..authz import make_challenge
+    from ..config import gate_secret
+
+    try:
+        ch = make_challenge(_tenant_user(x_tenant_id), host, secret=gate_secret())
+    except ValueError as e:
+        raise HTTPException(400, f"invalid host: {e}")
+    get_store().upsert_target(x_tenant_id, ch.host, ownership_proven=False)
+    return {
+        "host": ch.host, "token": ch.token,
+        "methods": {
+            "dns_txt": {"name": ch.dns_txt_name, "value": ch.dns_txt_value},
+            "well_known_file": {"url": ch.well_known_url, "body": ch.well_known_body},
+            "meta_tag": ch.meta_tag,
+        },
+        "next_step": "Publish any one of these, then POST /targets/check.",
+    }
+
+
+@app.post("/targets/check")
+def target_check(host: str, method: str = "dns_txt",
+                 x_tenant_id: str = Header(default=DEFAULT_TENANT)):
+    """Check the published proof live (step 2). On success the target is marked
+    owned so an external assessment can run."""
+    from datetime import timedelta
+
+    from ..authz import make_challenge
+    from ..authz.verification import VerificationMethod
+    from ..config import build_live_verifier, gate_secret
+
+    if method not in _METHODS:
+        raise HTTPException(400, f"method must be one of {sorted(_METHODS)}")
+    try:
+        ch = make_challenge(_tenant_user(x_tenant_id), host, secret=gate_secret())
+    except ValueError as e:
+        raise HTTPException(400, f"invalid host: {e}")
+    result = build_live_verifier().verify(ch, VerificationMethod(method))
+    expires = (_now_dt() + timedelta(hours=24)).isoformat() if result.verified else None
+    get_store().upsert_target(x_tenant_id, ch.host, ownership_proven=result.verified,
+                              proof_method=method if result.verified else None,
+                              proof_expires_at=expires)
+    return {"host": ch.host, "verified": result.verified, "method": method,
+            "detail": result.detail, "proof_expires_at": expires}
+
+
+@app.get("/targets")
+def list_targets(x_tenant_id: str = Header(default=DEFAULT_TENANT)):
+    return get_store().list_targets(x_tenant_id)
+
+
+@app.post("/assessments/external")
+def assess_external(host: str, method: str = "dns_txt", label: str = "",
+                    x_tenant_id: str = Header(default=DEFAULT_TENANT)):
+    """Run the observation-only header scan against a host you own. Ownership is
+    re-verified live first; if it fails, nothing is scanned."""
+    from ..authz.errors import VerificationFailed
+    from ..authz.verification import VerificationMethod
+    from ..config import build_live_verifier, gate_secret
+    from ..external_scan import run_external_assessment
+
+    if method not in _METHODS:
+        raise HTTPException(400, f"method must be one of {sorted(_METHODS)}")
+    try:
+        res = run_external_assessment(
+            host, verifier=build_live_verifier(), secret=gate_secret(),
+            method=VerificationMethod(method), tenant_id=x_tenant_id, label=label,
+            audit_path=str(DATA_DIR / "external" / f"{_safe_name(host)}-audit.jsonl"))
+    except VerificationFailed as e:
+        raise HTTPException(403, f"ownership not proven for {host}: {e}")
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    get_store().save_campaign(campaign_to_record(res, tenant_id=x_tenant_id))
+    return res.model_dump()
+
+
+def _now_dt():
+    return datetime.now(timezone.utc)
+
+
+def _safe_name(s: str) -> str:
+    return "".join(c if c.isalnum() or c in "-._" else "_" for c in s)[:120]
 
 
 @app.get("/leaderboard")

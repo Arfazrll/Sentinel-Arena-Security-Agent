@@ -23,7 +23,6 @@ cleared.
 from __future__ import annotations
 
 import os
-import secrets as _secrets
 from typing import Any
 
 # --- resilient import across mcp 1.x (FastMCP) and 2.x (MCPServer) ----------
@@ -42,14 +41,10 @@ _USER = os.environ.get("ARENA_MCP_USER", "mcp-operator")
 
 
 def _gate_secret() -> bytes:
-    """Stable per-deployment secret for verification tokens. From the env in
-    production (a vault); a random one otherwise (tokens stay valid for the life
-    of the process)."""
-    env = os.environ.get("ARENA_GATE_SECRET")
-    if env:
-        return env.encode("utf-8")
-    globals().setdefault("_EPHEMERAL_SECRET", _secrets.token_bytes(32))
-    return globals()["_EPHEMERAL_SECRET"]
+    """Stable per-deployment secret for verification tokens (shared with the API
+    and external scanner via ``config.gate_secret``)."""
+    from ..config import gate_secret
+    return gate_secret()
 
 
 def build_server() -> Any:
@@ -93,6 +88,43 @@ def build_server() -> Any:
                          "proof is performed by the authorization gate before any "
                          "action is taken.",
         }
+
+    @server.tool(description="Check a published ownership proof for a host live "
+                 "(DNS TXT / well-known file / meta tag). Returns whether "
+                 "ownership is now proven. Run this after verify_target and after "
+                 "publishing the proof.")
+    def check_target(host: str, method: str = "dns_txt") -> dict:
+        from ..authz.verification import VerificationMethod
+        from ..config import build_live_verifier
+        if method not in {"dns_txt", "well_known_file", "meta_tag"}:
+            return {"error": "method must be dns_txt, well_known_file or meta_tag"}
+        ch = make_challenge(_USER, host, secret=_gate_secret())
+        r = build_live_verifier().verify(ch, VerificationMethod(method))
+        return {"host": ch.host, "verified": r.verified, "method": method,
+                "detail": r.detail}
+
+    @server.tool(description="Run an observation-only posture scan against a host "
+                 "you own. Ownership is re-verified live first; if it fails, "
+                 "nothing is scanned. Returns the prioritized vulnerabilities + "
+                 "mitigations. This is header-only - no payloads, no path fuzzing.")
+    def assess_external_target(host: str, method: str = "dns_txt",
+                               label: str = "") -> dict:
+        from ..authz.errors import VerificationFailed
+        from ..authz.verification import VerificationMethod
+        from ..config import build_live_verifier
+        from ..external_scan import run_external_assessment
+        if method not in {"dns_txt", "well_known_file", "meta_tag"}:
+            return {"error": "method must be dns_txt, well_known_file or meta_tag"}
+        try:
+            res = run_external_assessment(
+                host, verifier=build_live_verifier(), secret=_gate_secret(),
+                method=VerificationMethod(method), label=label, user_id=_USER)
+        except VerificationFailed as e:
+            return {"verified": False, "error": f"ownership not proven: {e}"}
+        data = res.model_dump()
+        data["summary_markdown"] = to_markdown(res)
+        data["headline"] = res.headline()
+        return data
 
     @server.tool(description="Run a security assessment campaign and return the "
                  "prioritized vulnerabilities-and-mitigations verdict. depth is "

@@ -403,6 +403,37 @@ export const api = {
     ),
   campaign: (id: string) => call<CampaignJob>(`/campaigns/${id}`),
   campaigns: () => call<CampaignBrief[]>("/campaigns"),
+  verifyTarget: (host: string) =>
+    call<VerifyChallenge>(`/targets/verify?host=${encodeURIComponent(host)}`, { method: "POST" }),
+  checkTarget: (host: string, method: string) =>
+    call<CheckResult>(`/targets/check?host=${encodeURIComponent(host)}&method=${method}`, { method: "POST" }),
+  targets: () => call<TargetInfo[]>("/targets"),
+  assessExternal: (host: string, method: string, label: string) =>
+    call<CampaignResult>(
+      `/assessments/external?host=${encodeURIComponent(host)}&method=${method}&label=${encodeURIComponent(label)}`,
+      { method: "POST" }
+    ),
+};
+
+export type VerifyChallenge = {
+  host: string;
+  token: string;
+  methods: {
+    dns_txt: { name: string; value: string };
+    well_known_file: { url: string; body: string };
+    meta_tag: string;
+  };
+  next_step: string;
+};
+
+export type CheckResult = { host: string; verified: boolean; method: string; detail: string; proof_expires_at: string | null };
+
+export type TargetInfo = {
+  tenant_id: string;
+  host: string;
+  ownership_proven: boolean;
+  proof_method: string | null;
+  proof_expires_at: string | null;
 };
 
 export const campaignReportUrl = (id: string) => `${API_BASE}/campaigns/${id}/report`;

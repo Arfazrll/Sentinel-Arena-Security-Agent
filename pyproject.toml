@@ -31,6 +31,12 @@ pdf = [
 docker = [
     "docker>=7.0",
 ]
+# Durable, multi-tenant persistence. SQLAlchemy runs the same models on SQLite
+# (default/dev/tests) and Postgres (production: set ARENA_DB_URL and add the
+# psycopg driver). Without this extra the platform uses the filesystem store.
+db = [
+    "sqlalchemy>=2.0",
+]
 # LLM-backed agents (provider-agnostic). Bring your own API key.
 llm = [
     "anthropic>=0.40",
