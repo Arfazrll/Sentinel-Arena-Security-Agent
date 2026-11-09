@@ -1,0 +1,39 @@
+[project]
+name = "sentinel-arena"
+version = "0.0.1"
+description = "Authorized multi-agent security-resilience platform. Authorization gate first."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { file = "LICENSE" }
+dependencies = [
+    "pydantic>=2.7",
+]
+
+[project.optional-dependencies]
+# Real network resolvers for ownership verification. Core logic does not import
+# these at module load; they are only used by the live resolver implementations.
+verify = [
+    "dnspython>=2.6",
+    "httpx>=0.27",
+]
+dev = [
+    "pytest>=8.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["sentinel_arena"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+# NOTE ON LAYOUT
+# The build brief draws the monorepo with top-level folders (authz/, engine/,
+# range/, agents/, ...). We keep those names but nest them under a single
+# importable package `sentinel_arena` to avoid colliding with common top-level
+# module names (e.g. `engine`, `report`). So `authz/` in the brief lives at
+# `sentinel_arena/authz/`, imported as `from sentinel_arena.authz import ...`.
