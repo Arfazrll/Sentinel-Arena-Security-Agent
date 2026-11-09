@@ -418,6 +418,7 @@ export const api = {
 export type VerifyChallenge = {
   host: string;
   token: string;
+  dns_available: boolean;
   methods: {
     dns_txt: { name: string; value: string };
     well_known_file: { url: string; body: string };

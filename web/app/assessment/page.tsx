@@ -159,7 +159,9 @@ export default function AssessmentPage() {
               {challenge && (
                 <>
                   <div className="muted" style={{ fontSize: 13 }}>
-                    Publish this for <code>{challenge.host}</code>, then check:
+                    {method === "dns_txt" && <>Add this <b>TXT record</b> at your DNS provider for <code>{challenge.host}</code>{!challenge.dns_available && <> — <b>note:</b> DNS checking isn't enabled on this server; use the File or Meta-tag method instead</>}, then check:</>}
+                    {method === "well_known_file" && <>Host a file at this <b>URL</b> on <code>{challenge.host}</code> containing the token as its body, then check:</>}
+                    {method === "meta_tag" && <>Add this <b>&lt;meta&gt; tag</b> into the <code>&lt;head&gt;</code> of your home page on <code>{challenge.host}</code>, then check:</>}
                   </div>
                   <div className="row" style={{ gap: 6, alignItems: "flex-start" }}>
                     <pre style={{ margin: 0, flex: 1, whiteSpace: "pre-wrap", wordBreak: "break-all",

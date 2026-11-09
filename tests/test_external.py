@@ -111,3 +111,32 @@ def test_api_target_verify_list_and_refuse(tmp_path, monkeypatch):
         assert ei.value.status_code == 403
     finally:
         store_mod.reset_store()
+
+
+def test_host_from_input_accepts_urls_and_rejects_junk():
+    import sentinel_arena.api.server as srv
+    from fastapi import HTTPException
+
+    assert srv._host_from_input("https://www.example.com/a/b?c=1") == "www.example.com"
+    assert srv._host_from_input("app.example.com:8443/x") == "app.example.com"
+    assert srv._host_from_input("  Example.COM.  ") == "example.com"
+    with pytest.raises(HTTPException):
+        srv._host_from_input("journal")       # a bare label is not a host
+
+
+def test_dns_check_without_dnspython_is_graceful_not_500(tmp_path, monkeypatch):
+    """The reported bug: a DNS check with dnspython absent must return a clean
+    'not verified' with guidance, never a 500."""
+    monkeypatch.setenv("ARENA_DATA_DIR", str(tmp_path))
+    from sentinel_arena import store as store_mod
+    store_mod.reset_store()
+    try:
+        import sentinel_arena.config as cfg
+        import sentinel_arena.api.server as srv
+        monkeypatch.setattr(cfg, "dns_verification_available", lambda: False)
+
+        r = srv.target_check(host="example.com", method="dns_txt", x_tenant_id="t1")
+        assert r["verified"] is False
+        assert "verify" in r["detail"].lower() or "dnspython" in r["detail"].lower()
+    finally:
+        store_mod.reset_store()

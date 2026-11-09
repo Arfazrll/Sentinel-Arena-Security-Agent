@@ -76,11 +76,22 @@ def _extract_meta_tokens(html: str) -> list[str]:
     return tokens
 
 
+# A browser-like User-Agent. Many CDNs/WAFs (Cloudflare et al.) stall or block
+# requests from an obviously-automated agent, which makes a legitimate
+# ownership-verification fetch time out even though the file is published. The
+# fetch is still read-only, size-capped and short-lived.
+VERIFIER_USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"
+)
+
+
 class StdlibHttpClient:
     """Dependency-free HTTP client (urllib) satisfying :class:`HttpClient`.
 
-    Used for localhost/self-hosted verification where pulling in httpx is
-    unnecessary. Short timeout, no redirects, small read cap.
+    Used for self-hosted verification where pulling in httpx is unnecessary.
+    Bounded timeout and a small read cap; follows redirects (http->https, apex
+    ->www) which is what urllib does by default.
     """
 
     def __init__(self, timeout: float = 5.0, max_bytes: int = 256 * 1024) -> None:
@@ -91,9 +102,17 @@ class StdlibHttpClient:
         import urllib.request
 
         req = urllib.request.Request(
-            url, headers={"User-Agent": "sentinel-arena-verifier/0.1"}
+            url, headers={"User-Agent": VERIFIER_USER_AGENT,
+                          "Accept": "text/plain,text/html;q=0.9,*/*;q=0.8"}
         )
-        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+        ctx = None
+        if url.lower().startswith("https"):
+            try:
+                from ..config import ssl_context
+                ctx = ssl_context()
+            except Exception:
+                ctx = None
+        with urllib.request.urlopen(req, timeout=self.timeout, context=ctx) as resp:
             return resp.read(self.max_bytes).decode("utf-8", "replace")
 
 

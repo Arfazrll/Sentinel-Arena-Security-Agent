@@ -45,10 +45,14 @@ class LiveHttpClient:
     def get_text(self, url: str) -> str:
         import httpx  # type: ignore
 
+        from .verification import VERIFIER_USER_AGENT
+
+        # Follow redirects: sites commonly send apex->www or http->https before
+        # serving the well-known file.
         with httpx.Client(
-            timeout=self.timeout, follow_redirects=False, http2=False
+            timeout=self.timeout, follow_redirects=True, http2=False
         ) as client:
-            resp = client.get(url, headers={"User-Agent": "sentinel-arena-verifier/0.1"})
+            resp = client.get(url, headers={"User-Agent": VERIFIER_USER_AGENT})
             resp.raise_for_status()
             body = resp.content[:_MAX_BODY_BYTES]
             return body.decode(resp.encoding or "utf-8", "replace")

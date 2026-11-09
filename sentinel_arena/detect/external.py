@@ -99,8 +99,9 @@ def analyze_headers(resp: Response, base_url: str) -> list[Finding]:
     return out
 
 
-def scan_external_headers(client: GatedHttpClient) -> list[Finding]:
+def scan_external_headers(client: GatedHttpClient, timeout: float = 20.0) -> list[Finding]:
     """One gated ``GET /`` -> all header findings. The client's gate enforces the
-    ownership proof, scope and rate cap before the request leaves."""
-    resp = client.get("/")
+    ownership proof, scope and rate cap before the request leaves. Raises
+    :class:`TargetUnreachable` (from the client) if the host gives no answer."""
+    resp = client.get("/", timeout=timeout)
     return analyze_headers(resp, client.base_url)

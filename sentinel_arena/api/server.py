@@ -595,8 +595,9 @@ def target_verify(host: str, x_tenant_id: str = Header(default=DEFAULT_TENANT)):
     """Issue an ownership challenge for a host (step 1). Records a pending target.
     Runs nothing against the host - it only returns the proof to publish."""
     from ..authz import make_challenge
-    from ..config import gate_secret
+    from ..config import dns_verification_available, gate_secret
 
+    host = _host_from_input(host)
     try:
         ch = make_challenge(_tenant_user(x_tenant_id), host, secret=gate_secret())
     except ValueError as e:
@@ -604,6 +605,7 @@ def target_verify(host: str, x_tenant_id: str = Header(default=DEFAULT_TENANT)):
     get_store().upsert_target(x_tenant_id, ch.host, ownership_proven=False)
     return {
         "host": ch.host, "token": ch.token,
+        "dns_available": dns_verification_available(),
         "methods": {
             "dns_txt": {"name": ch.dns_txt_name, "value": ch.dns_txt_value},
             "well_known_file": {"url": ch.well_known_url, "body": ch.well_known_body},
@@ -622,15 +624,25 @@ def target_check(host: str, method: str = "dns_txt",
 
     from ..authz import make_challenge
     from ..authz.verification import VerificationMethod
-    from ..config import build_live_verifier, gate_secret
+    from ..config import build_live_verifier, dns_verification_available, gate_secret
 
     if method not in _METHODS:
         raise HTTPException(400, f"method must be one of {sorted(_METHODS)}")
+    host = _host_from_input(host)
+    if method == "dns_txt" and not dns_verification_available():
+        return {"host": host, "verified": False, "method": method,
+                "detail": "DNS verification needs the 'verify' extra (dnspython) "
+                          "on the server. Use the well-known file or meta tag "
+                          "method instead, or install it.", "proof_expires_at": None}
     try:
         ch = make_challenge(_tenant_user(x_tenant_id), host, secret=gate_secret())
     except ValueError as e:
         raise HTTPException(400, f"invalid host: {e}")
-    result = build_live_verifier().verify(ch, VerificationMethod(method))
+    try:
+        result = build_live_verifier().verify(ch, VerificationMethod(method))
+    except Exception as e:  # never 500 on a verification probe
+        return {"host": ch.host, "verified": False, "method": method,
+                "detail": f"verification could not run: {e}", "proof_expires_at": None}
     expires = (_now_dt() + timedelta(hours=24)).isoformat() if result.verified else None
     get_store().upsert_target(x_tenant_id, ch.host, ownership_proven=result.verified,
                               proof_method=method if result.verified else None,
@@ -651,11 +663,16 @@ def assess_external(host: str, method: str = "dns_txt", label: str = "",
     re-verified live first; if it fails, nothing is scanned."""
     from ..authz.errors import VerificationFailed
     from ..authz.verification import VerificationMethod
-    from ..config import build_live_verifier, gate_secret
+    from ..config import build_live_verifier, dns_verification_available, gate_secret
+    from ..detect.client import TargetUnreachable
     from ..external_scan import run_external_assessment
 
     if method not in _METHODS:
         raise HTTPException(400, f"method must be one of {sorted(_METHODS)}")
+    host = _host_from_input(host)
+    if method == "dns_txt" and not dns_verification_available():
+        raise HTTPException(400, "DNS verification needs the 'verify' extra on the "
+                            "server; use well_known_file or meta_tag.")
     try:
         res = run_external_assessment(
             host, verifier=build_live_verifier(), secret=gate_secret(),
@@ -663,7 +680,11 @@ def assess_external(host: str, method: str = "dns_txt", label: str = "",
             audit_path=str(DATA_DIR / "external" / f"{_safe_name(host)}-audit.jsonl"))
     except VerificationFailed as e:
         raise HTTPException(403, f"ownership not proven for {host}: {e}")
-    except ValueError as e:
+    except TargetUnreachable as e:
+        # Ownership proved, but this server can't reach the site to scan it.
+        raise HTTPException(502, f"{e}. The scanner must run somewhere that can "
+                            "reach the site over HTTPS.")
+    except (ValueError, RuntimeError) as e:
         raise HTTPException(400, str(e))
     get_store().save_campaign(campaign_to_record(res, tenant_id=x_tenant_id))
     return res.model_dump()
@@ -675,6 +696,31 @@ def _now_dt():
 
 def _safe_name(s: str) -> str:
     return "".join(c if c.isalnum() or c in "-._" else "_" for c in s)[:120]
+
+
+def _host_from_input(raw: str) -> str:
+    """Accept what a person pastes - a full URL, a host:port, trailing slash -
+    and return the bare hostname the gate expects. Raises HTTPException(400) if
+    nothing host-like is left."""
+    from urllib.parse import urlparse
+
+    s = (raw or "").strip()
+    if "://" in s:
+        p = urlparse(s)
+        s = p.netloc or p.path
+    s = s.split("/")[0].strip()          # drop any path
+    if "@" in s:                          # drop userinfo
+        s = s.split("@")[-1]
+    if s.startswith("[") and "]" in s:    # ipv6 literal
+        s = s[1:s.index("]")]
+    elif ":" in s:                        # drop port
+        s = s.split(":")[0]
+    s = s.lower().rstrip(".")
+    if not s or (s != "localhost" and "." not in s):
+        # a bare label like "journal" isn't a host; a domain or IP has a dot
+        raise HTTPException(400, f"that doesn't look like a host or URL: {raw!r}. "
+                            "Enter a domain like app.example.com.")
+    return s
 
 
 @app.get("/leaderboard")

@@ -16,6 +16,14 @@ from dataclasses import dataclass, field
 from ..authz import AuthorizationGate, Scope
 
 
+class TargetUnreachable(Exception):
+    """The target host gave no HTTP answer at all (DNS/connect/TLS/timeout).
+
+    Distinct from an HTTP error status, which *is* an answer. The external
+    scanner turns this into a clear "we couldn't reach your site" message rather
+    than inventing findings from an empty response."""
+
+
 @dataclass
 class Response:
     status: int
@@ -68,11 +76,26 @@ class GatedHttpClient:
         # 3. The actual request, tagged with our actor identity.
         url = f"{self.base_url}{path}"
         req = urllib.request.Request(url, headers={"X-Arena-Actor": self.actor})
+        ctx = None
+        if url.lower().startswith("https"):
+            try:
+                from ..config import ssl_context
+                ctx = ssl_context()
+            except Exception:
+                ctx = None
         try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
+            with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
                 body = resp.read().decode("utf-8", "replace")
                 return Response(status=resp.status, headers=dict(resp.headers),
                                text=body)
         except urllib.error.HTTPError as e:
+            # A real HTTP response (4xx/5xx) is still an answer from the host.
             body = e.read().decode("utf-8", "replace") if e.fp else ""
             return Response(status=e.code, headers=dict(e.headers or {}), text=body)
+        except (urllib.error.URLError, TimeoutError, OSError) as e:
+            # No HTTP answer at all: DNS/connect/TLS/timeout. Surface it clearly
+            # so callers (e.g. the external scanner) can report "unreachable"
+            # instead of hanging or 500-ing.
+            reason = getattr(e, "reason", e)
+            raise TargetUnreachable(
+                f"could not connect to {self.host}: {reason}") from e
