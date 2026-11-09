@@ -43,28 +43,36 @@ arena scenarios                         # list scenarios
 arena replay var/engagements/shop-01-42 # re-print the timeline + score
 arena verify-audit <dir>/audit.jsonl    # check the tamper-evident hash chain
 arena bench --seeds 42,7,101,2,5        # leaderboard across agents + seeds
+arena agents                            # list registered red/blue agents
+arena export <dir> --format sarif       # SARIF / ATT&CK Navigator layer / CSV
 ```
 
 ## Leaderboard (honest benchmark)
 
-`arena bench` runs a red × blue agent cross-product over many seeds. Agents are
-registry entries, so a future LLM/MCP agent appears here the same way. Current
-results on `shop-01` over 5 seeds (42, 7, 101, 2, 5):
+`arena bench` (or the **Benchmarks** page) runs every red agent against every
+blue agent over the same seeds. Agents are registry entries
+(`agents/registry.py`), so an LLM/MCP agent appears here the same way. Results
+on `shop-01`, seeds 42 and 7, produced by the real harness:
 
-| Red | Blue | Runs | Attacker win % | Mean resilience | Mean red | Mean blue | Mean ticks-to-detect |
-| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| scripted | scripted | 5 | 0% | 88.0 | 13.0 | 48.0 | 1.0 |
-| scripted | noop | 5 | 100% | 30.0 | 62.0 | 20.0 | – |
+| Red | Blue | Attacker win % | Mean resilience | Mean ticks-to-detect |
+| --- | --- | ---: | ---: | ---: |
+| Methodical | Real-time SOC | 0% | 88 | 1 |
+| Methodical | Batch SOC | 0% | 78 | 2 |
+| Methodical | Block-everything | 0% | 74 | - |
+| Rush | Real-time SOC | 100% | 43 | 1 |
+| Rush | Batch SOC | 100% | 40 | - |
+| Rush | No defense | 100% | 40 | - |
+| Rush | Block-everything | 100% | 31 | - |
+| Methodical | No defense | 100% | 30 | - |
 
-Read: the scripted defender detects the attacker on tick 1 and stops every flag
-capture (0% attacker win, resilience 88); a passive defender loses every time
-(100% attacker win, resilience 30). Only two agents are registered today, so the
-table is small — but it is produced by the real harness, not hand-written.
+Read: the real-time defender stops the methodical attacker, but the **Rush**
+attacker (recon, then straight for the flag) wins before any reactive defender
+can respond. That gap is what the benchmark is for. The block-everything
+defender is penalized for knocking real users offline.
 
 ## Watch it live
 
-Two frontends. A **Next.js app** (the primary UI — live arena with a React Flow
-network map, leaderboard, and report pages):
+The **Next.js app** in `web/` is the main UI:
 
 ```bash
 uv pip install -e ".[api]"
@@ -73,8 +81,34 @@ uvicorn sentinel_arena.api.server:app      # backend on :8000
 cd web && npm install && npm run dev       # UI on http://localhost:3000
 ```
 
-Or a zero-build **single served page** at `http://127.0.0.1:8000` (same backend,
-no Node needed).
+What it gives you:
+
+- **Overview**: latest posture, mean resilience trend, attacker win rate,
+  median time to detect, open findings, weaknesses by OWASP category.
+- **Live arena**: pick scenario, attacker, defender, seed and pace, then watch
+  the match. Agent panels show each agent's current intent and kill-chain
+  progress; an interactive attack-surface graph lights up as red probes,
+  finds weaknesses, gets blocked or breaches; live score, resilience and
+  traffic charts; MITRE ATT&CK coverage; a filterable event log; and an
+  **emergency stop** wired to the kill switch.
+- **Engagements**: searchable history (persists across API restarts), CSV
+  export, and a **compare** view (metric deltas, overlaid timelines, findings
+  diff).
+- **Engagement detail**: full **replay** with a scrubbable timeline and
+  keyboard controls; findings with CWE, CVSS band, priority, fix SLA and
+  indicative NIST CSF 2.0 / ISO 27001:2022 / PCI DSS 4.0 / SOC 2 mapping;
+  SOC metrics (time to detect, time to contain, dwell) and a term-by-term
+  "why this score" breakdown; the hash-chained **audit trail** with live
+  verification; exports to **SARIF 2.1.0**, an **ATT&CK Navigator layer**,
+  CSV, JSON and Markdown.
+- **Benchmarks**: background job with progress, red x blue resilience heatmap,
+  ranked matchups, per-seed results.
+- **Remediation**: findings de-duplicated across runs into a backlog with
+  status tracking and a per-control view.
+- **Scenarios**, **Agents** and **Trust & safety** pages, a `Ctrl+K` command
+  palette, and light/dark themes.
+
+A zero-build single page is still served at `http://127.0.0.1:8000`.
 
 PDF export turns on with `.[pdf]`. An LLM red/blue agent (`--red llm` / `--blue
 llm`) turns on with `.[llm]` and an `ANTHROPIC_API_KEY`. A Docker-hosted range
@@ -98,11 +132,16 @@ A full end-to-end vertical slice, built in the brief's milestone order:
 - **Referee + scoring** (`engine`) — turn-based tick loop, ≤3 actions/team/tick,
   action validation, blue defensive whitelist (no free shell), MITRE ATT&CK
   tagging, a kill switch, and a transparent resilience score.
-- **Scripted agents** (`agents`) — baseline red/blue bots (the bar the LLM teams
-  must beat) + a no-op blue to prove scenarios are solvable.
+- **Scripted agents** (`agents`) — methodical and rush attackers; real-time,
+  batch, block-everything and no-op defenders, all resolved through one
+  registry and all limited to the vetted action vocabulary.
 - **Resilience report** (`report`) — HTML / Markdown / PDF, OWASP mapping,
   severity, mitigations, timeline, and the audit trail.
-- **Live arena API** (`api`) — FastAPI + WebSocket.
+- **Live arena API** (`api`) — FastAPI + WebSocket: engagements (start, stop
+  via kill switch, events, result, audit, exports), persisted history,
+  cross-run findings, background benchmark jobs, agent and scenario catalogs.
+- **Platform reporting** (`report/kpis.py`, `compliance.py`, `exports.py`) —
+  SOC KPIs, compliance enrichment, SARIF / ATT&CK Navigator / CSV.
 - **Next.js frontend** (`web/`) — React + React Flow live arena, leaderboard, and
   report pages. Builds and type-checks cleanly.
 - **Leaderboard** (`leaderboard.py`) — real benchmark harness across agents + seeds.
@@ -113,7 +152,7 @@ A full end-to-end vertical slice, built in the brief's milestone order:
 - **CLI** (`cli.py`), the **orchestrator** (`engagement.py`), and **CI** that runs
   the scripted-bot smoke tests + a safety-invariant gate.
 
-**88 Python tests passing** + the Next.js app builds. See
+**105 Python tests passing** + the Next.js app builds. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/authz.md`](docs/authz.md),
 [`web/README.md`](web/README.md), and [`docs/DEMO.md`](docs/DEMO.md).
 

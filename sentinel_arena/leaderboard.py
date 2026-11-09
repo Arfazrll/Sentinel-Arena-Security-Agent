@@ -18,18 +18,13 @@ from statistics import mean
 
 from pydantic import BaseModel
 
-from .agents.scripted.blue import NoOpBlue, ScriptedBlue
-from .agents.scripted.red import ScriptedRed
+from .agents import registry
 from .engagement import run_engagement
 
-# name -> factory. Extend these to compare more agents (incl. LLM later).
-RED_AGENTS = {
-    "scripted": ScriptedRed,
-}
-BLUE_AGENTS = {
-    "scripted": ScriptedBlue,
-    "noop": NoOpBlue,
-}
+# name -> factory, resolved from the shared registry (benchmarkable agents only;
+# LLM agents need an API key and are opt-in via ``reds=[...]`` / ``blues=[...]``).
+RED_AGENTS = {n: registry.RED[n].factory for n in registry.benchmark_names("red")}
+BLUE_AGENTS = {n: registry.BLUE[n].factory for n in registry.benchmark_names("blue")}
 
 
 class MatchupStats(BaseModel):
@@ -42,6 +37,12 @@ class MatchupStats(BaseModel):
     mean_blue_score: float
     mean_ticks_to_detection: float | None
     mean_duration_s: float
+    red_label: str = ""
+    blue_label: str = ""
+    resilience_runs: list[int] = []
+    mean_false_blocks: float = 0.0
+    mean_sla_uptime: float = 1.0
+    mean_ticks_run: float = 0.0
 
 
 def run_benchmark(
@@ -50,10 +51,15 @@ def run_benchmark(
     reds: list[str] | None = None,
     blues: list[str] | None = None,
     scenario: str = "shop-01",
+    on_progress=None,
 ) -> list[MatchupStats]:
+    """Run every red x blue x seed combination. ``on_progress(done, total, label)``
+    is called after each run (used by the API's background benchmark jobs)."""
     reds = reds or list(RED_AGENTS)
     blues = blues or list(BLUE_AGENTS)
     out: list[MatchupStats] = []
+    total = len(reds) * len(blues) * len(seeds)
+    done = 0
 
     with tempfile.TemporaryDirectory(prefix="arena-bench-") as tmp:
         for red in reds:
@@ -62,12 +68,15 @@ def run_benchmark(
                 for seed in seeds:
                     art = run_engagement(
                         scenario, seed=seed,
-                        red_agent=RED_AGENTS[red](),
-                        blue_agent=BLUE_AGENTS[blue](),
+                        red_agent=registry.get("red", red).build(),
+                        blue_agent=registry.get("blue", blue).build(),
                         out_dir=f"{tmp}/{red}-{blue}-{seed}",
                         generate_report=False,
                     )
                     res.append(art.result)
+                    done += 1
+                    if on_progress is not None:
+                        on_progress(done, total, f"{red} vs {blue} seed {seed}")
                 caps = [1 for r in res if r.scoreboard.red.flag_captured]
                 ttds = [r.scoreboard.blue.ticks_to_first_detection for r in res
                         if r.scoreboard.blue.ticks_to_first_detection is not None]
@@ -79,6 +88,12 @@ def run_benchmark(
                     mean_blue_score=round(mean(r.scoreboard.blue.total for r in res), 1),
                     mean_ticks_to_detection=round(mean(ttds), 2) if ttds else None,
                     mean_duration_s=round(mean(r.duration_s for r in res), 3),
+                    red_label=registry.get("red", red).label,
+                    blue_label=registry.get("blue", blue).label,
+                    resilience_runs=[r.scoreboard.resilience for r in res],
+                    mean_false_blocks=round(mean(r.scoreboard.blue.false_blocks for r in res), 2),
+                    mean_sla_uptime=round(mean(r.scoreboard.blue.sla_uptime for r in res), 3),
+                    mean_ticks_run=round(mean(r.ticks_run for r in res), 1),
                 ))
     # Rank by resilience (defender efficacy) descending.
     out.sort(key=lambda s: s.mean_resilience, reverse=True)

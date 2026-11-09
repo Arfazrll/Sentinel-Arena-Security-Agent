@@ -6,7 +6,7 @@ SEEDS = [42, 7, 101]
 
 
 def test_benchmark_compares_two_defenders():
-    stats = run_benchmark(seeds=SEEDS, blues=["scripted", "noop"])
+    stats = run_benchmark(seeds=SEEDS, reds=["scripted"], blues=["scripted", "noop"])
     by_blue = {s.blue: s for s in stats}
     assert set(by_blue) == {"scripted", "noop"}
 

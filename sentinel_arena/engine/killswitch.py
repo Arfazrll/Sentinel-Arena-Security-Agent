@@ -18,6 +18,11 @@ class KillSwitch:
         self._reason = reason
         self._event.set()
 
+    def wait(self, timeout: float) -> bool:
+        """Sleep up to ``timeout`` seconds, waking at once if tripped.
+        Returns True if the switch is (now) tripped."""
+        return self._event.wait(timeout)
+
     @property
     def tripped(self) -> bool:
         return self._event.is_set()

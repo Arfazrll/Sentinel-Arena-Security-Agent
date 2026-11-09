@@ -22,8 +22,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
-from .agents.scripted.blue import NoOpBlue, ScriptedBlue
-from .agents.scripted.red import ScriptedRed
+from .agents import registry
 from .authz import (
     AuditLog,
     AuthorizationGate,
@@ -40,7 +39,9 @@ from .engine.context import EngagementContext
 from .engine.killswitch import KillSwitch
 from .engine.referee import EngagementResult, Referee
 from .range.runner import bring_up
+from .report.compliance import enrich
 from .report.generator import write_report
+from .report.kpis import compute_kpis
 from .scenarios.loader import load_scenario
 from .telemetry.events import EventStore, InMemoryEventSink
 from .telemetry.traffic import BenignTraffic
@@ -61,19 +62,11 @@ class EngagementArtifacts:
 
 
 def _build_red(name: str):
-    if name == "llm":
-        from .agents.llm import LLMRed, default_anthropic_client
-        return LLMRed(default_anthropic_client())
-    return ScriptedRed()
+    return registry.get("red", name).build()
 
 
 def _build_blue(name: str):
-    if name == "llm":
-        from .agents.llm import LLMBlue, default_anthropic_client
-        return LLMBlue(default_anthropic_client())
-    if name == "noop":
-        return NoOpBlue()
-    return ScriptedBlue()
+    return registry.get("blue", name).build()
 
 
 def _make_scope(now) -> Scope:
@@ -101,7 +94,9 @@ def run_engagement(
     on_event=None,
     generate_report: bool = True,
     range_backend: str = "inprocess",
+    tick_delay_s: float = 0.0,
 ) -> EngagementArtifacts:
+    started_at = datetime.now(timezone.utc)
     scenario = load_scenario(scenario_id)
     randomized = scenario.randomized(seed)
 
@@ -126,7 +121,12 @@ def run_engagement(
         from .range.docker_runner import bring_up_docker
         rng = bring_up_docker(scenario, randomized, token=challenge.token)
     else:
-        rng = bring_up(scenario, randomized, token=challenge.token, sink=sink)
+        # Tag every range request with the referee's current tick so traffic
+        # lines up with actions on the timeline.
+        tick_holder = {"ctx": None}
+        rng = bring_up(scenario, randomized, token=challenge.token, sink=sink,
+                       tick_provider=lambda: (tick_holder["ctx"].tick
+                                              if tick_holder["ctx"] else -1))
     try:
         now = datetime.now(timezone.utc)
         scope = _make_scope(now)
@@ -151,18 +151,26 @@ def run_engagement(
             randomized=randomized, range=rng, events=events, red_client=red_client,
             seed=seed,
         )
+        if range_backend != "docker":
+            tick_holder["ctx"] = ctx
 
         red = red_agent or _build_red(red_name)
         blue = blue_agent or _build_blue(blue_name)
 
         referee = Referee(ctx, red, blue, killswitch=killswitch,
-                          traffic=BenignTraffic())
+                          traffic=BenignTraffic(), tick_delay_s=tick_delay_s)
         result = referee.run()
         result.audit_path = str(audit.path)
     finally:
         rng.shutdown()
 
     # Persist a machine-readable summary + the human report.
+    all_events = [e.model_dump() for e in events]
+    timeline = [{"tick": e["tick"], **{k: e["data"].get(k) for k in
+                 ("red", "blue", "resilience", "findings", "flag_captured")}}
+                for e in all_events if e["kind"] == "score_tick"]
+    red_spec = _spec("red", red_name, red)
+    blue_spec = _spec("blue", blue_name, blue)
     (out_dir / "result.json").write_text(
         json.dumps(
             {
@@ -170,9 +178,26 @@ def run_engagement(
                 "seed": result.seed,
                 "ended": result.ended_reason,
                 "ticks_run": result.ticks_run,
+                "max_ticks": scenario.max_ticks,
                 "scoreboard": result.scoreboard.model_dump(),
-                "findings": [f.model_dump(mode="json") for f in result.findings.findings],
+                "findings": [enrich(f.model_dump(mode="json"))
+                             for f in result.findings.findings],
                 "duration_s": result.duration_s,
+                "meta": {
+                    "scenario_name": scenario.name,
+                    "red": red_spec[0], "red_label": red_spec[1],
+                    "blue": blue_spec[0], "blue_label": blue_spec[1],
+                    "started_at": started_at.isoformat(),
+                    "finished_at": datetime.now(timezone.utc).isoformat(),
+                    "tick_delay_s": tick_delay_s,
+                    "host": HOST,
+                    "operator": USER,
+                    "scope_fingerprint": scope.fingerprint(),
+                    "environment": scope.environment.value,
+                    "rate_cap": f"{scope.rate_cap.max_requests}/{scope.rate_cap.per_seconds}s",
+                },
+                "kpis": compute_kpis(all_events, result.ticks_run),
+                "timeline": timeline,
             },
             indent=2,
         ),
@@ -192,6 +217,18 @@ def run_engagement(
         report_md=report_md,
         report_pdf=report_pdf,
     )
+
+
+def _spec(team: str, name: str, agent) -> tuple[str, str]:
+    """(registry name, display label) for the agent that actually ran. An agent
+    passed in directly is matched to its registry entry by class."""
+    table = registry.RED if team == "red" else registry.BLUE
+    for spec_name, spec in table.items():
+        if isinstance(spec.factory, type) and isinstance(agent, spec.factory):
+            return spec_name, spec.label
+    if name in table:
+        return name, table[name].label
+    return name, getattr(agent, "name", name)
 
 
 class _BoundHttp:

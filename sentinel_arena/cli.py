@@ -4,6 +4,8 @@
     arena scenarios
     arena replay var/engagements/shop-01-42
     arena verify-audit var/engagements/shop-01-42/audit.jsonl
+    arena agents
+    arena export var/engagements/shop-01-42 --format sarif
 """
 
 from __future__ import annotations
@@ -25,8 +27,8 @@ app = typer.Typer(add_completion=False, help="Sentinel Arena — authorized "
 def run(
     scenario: str = typer.Option("shop-01", help="Scenario id."),
     seed: int = typer.Option(42, help="Randomizer seed."),
-    red: str = typer.Option("scripted", help="Red agent (scripted)."),
-    blue: str = typer.Option("scripted", help="Blue agent (scripted|noop)."),
+    red: str = typer.Option("scripted", help="Red agent (see `arena agents`)."),
+    blue: str = typer.Option("scripted", help="Blue agent (see `arena agents`)."),
     out: str = typer.Option("", help="Output directory (default under var/)."),
 ):
     """Run one full engagement end to end against the bundled sandbox app."""
@@ -100,6 +102,44 @@ def replay(engagement_dir: str):
         if e.kind in {"action", "finding", "score", "tick"}:
             tag = f"[{e.tick:>2}] {e.team:<6}" if e.tick >= 0 else "       "
             typer.echo(f"{tag} {e.kind:<8} {e.summary}")
+
+
+@app.command()
+def agents():
+    """List the registered red and blue agents."""
+    from .agents.registry import BLUE, RED
+
+    for team, table in (("red", RED), ("blue", BLUE)):
+        for name, spec in table.items():
+            flag = "" if spec.available() else "  (unavailable: needs API key)"
+            typer.echo(f"{team:<5} {name:<10} {spec.label:<18} {spec.description}{flag}")
+
+
+@app.command()
+def export(
+    engagement_dir: str,
+    format: str = typer.Option("sarif", help="sarif | navigator | csv"),
+    out: str = typer.Option("", help="Output file (default next to result.json)."),
+):
+    """Export an engagement's findings as SARIF, an ATT&CK Navigator layer, or CSV."""
+    from .report.compliance import enrich
+    from .report.exports import to_csv, to_navigator_layer, to_sarif
+
+    d = Path(engagement_dir)
+    res = json.loads((d / "result.json").read_text(encoding="utf-8"))
+    res["findings"] = [f if "rule_id" in f else enrich(f) for f in res["findings"]]
+    if format == "sarif":
+        body, ext = json.dumps(to_sarif(res), indent=2), "sarif"
+    elif format == "navigator":
+        events = [e.model_dump() for e in EventStore(d / "events.jsonl")]
+        body, ext = json.dumps(to_navigator_layer(res, events), indent=2), "layer.json"
+    elif format == "csv":
+        body, ext = to_csv(res), "csv"
+    else:
+        raise typer.BadParameter("format must be sarif, navigator or csv")
+    target = Path(out) if out else d / f"findings.{ext}"
+    target.write_text(body, encoding="utf-8")
+    typer.echo(f"  Written: {target}")
 
 
 @app.command("verify-audit")

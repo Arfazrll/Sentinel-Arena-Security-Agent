@@ -184,6 +184,7 @@ class Referee:
         *,
         killswitch: KillSwitch | None = None,
         traffic=None,
+        tick_delay_s: float = 0.0,
     ) -> None:
         self.ctx = ctx
         self.red = red_agent
@@ -191,6 +192,9 @@ class Referee:
         self.kill = killswitch or KillSwitch()
         self.traffic = traffic  # optional benign traffic generator
         self._sla_samples: list[bool] = []
+        # Optional pacing so a live viewer can follow the match. The wait is
+        # interruptible: tripping the kill switch wakes it immediately.
+        self.tick_delay_s = max(0.0, float(tick_delay_s))
 
     def _run_team(self, agent, team: str) -> None:
         proposed = agent.propose(self.ctx) or []
@@ -217,7 +221,10 @@ class Referee:
                 summary=f"{action.kind}: {result.detail}",
                 data={"kind": action.kind, "ok": result.ok,
                       "attack_technique": tech.technique_id if tech else None,
+                      "technique_name": tech.name if tech else None,
                       "tactic": tech.tactic if tech else None,
+                      "rationale": action.rationale,
+                      "params": action.params,
                       **result.data},
             )
 
@@ -254,16 +261,61 @@ class Referee:
                 break
             self._run_team(self.blue, "blue")
 
+            self._emit_tick_score(tick)
+
             if ctx.state.flag_captured:
                 ended = "flag_captured"
                 break
+
+            if self.tick_delay_s and tick < scenario.max_ticks - 1:
+                if self.kill.wait(self.tick_delay_s):
+                    ended = f"killswitch: {self.kill.reason}"
+                    break
 
         ticks_run = tick + 1
         result = self._finalize(ticks_run, ended, time.monotonic() - start,
                                events_path=str(ctx.events.path))
         return result
 
+    def _emit_tick_score(self, tick: int) -> None:
+        """Running scoreboard after this tick - feeds the live charts."""
+        board = self._board()
+        st = self.ctx.state
+        self.ctx.events.emit(
+            kind="score_tick", team="system", tick=tick,
+            summary=f"tick {tick}: resilience {board.resilience}",
+            data={"red": board.red.total, "blue": board.blue.total,
+                  "resilience": board.resilience,
+                  "findings": len(st.findings.findings),
+                  "blocked": sorted(st.blocked_actors),
+                  "detected": sorted(st.detected_attackers),
+                  "paths": sorted(st.discovered_paths),
+                  "flag_captured": st.flag_captured,
+                  "sla_ok": bool(self._sla_samples[-1]) if self._sla_samples else True},
+        )
+
     def _finalize(self, ticks_run, ended, duration, events_path) -> EngagementResult:
+        ctx = self.ctx
+        board = self._board()
+        red, blue, resilience = board.red, board.blue, board.resilience
+        ctx.events.emit(kind="score", team="system", tick=ticks_run - 1,
+                       summary=board.summary(),
+                       data={"red": red.total, "blue": blue.total,
+                             "resilience": resilience, "ended": ended})
+
+        return EngagementResult(
+            scenario_id=ctx.scenario.id,
+            seed=ctx.seed,
+            scoreboard=board,
+            findings=ctx.state.findings,
+            ticks_run=ticks_run,
+            ended_reason=ended,
+            duration_s=round(duration, 3),
+            events_path=events_path,
+            audit_path="",  # filled in by the orchestrator
+        )
+
+    def _board(self) -> ScoreBoard:
         ctx = self.ctx
         st = ctx.state
 
@@ -302,21 +354,4 @@ class Referee:
         )
 
         resilience = compute_resilience(red, blue, st.findings)
-        board = ScoreBoard(red=red, blue=blue, resilience=resilience)
-
-        ctx.events.emit(kind="score", team="system", tick=ticks_run - 1,
-                       summary=board.summary(),
-                       data={"red": red.total, "blue": blue.total,
-                             "resilience": resilience, "ended": ended})
-
-        return EngagementResult(
-            scenario_id=ctx.scenario.id,
-            seed=ctx.seed,
-            scoreboard=board,
-            findings=st.findings,
-            ticks_run=ticks_run,
-            ended_reason=ended,
-            duration_s=round(duration, 3),
-            events_path=events_path,
-            audit_path="",  # filled in by the orchestrator
-        )
+        return ScoreBoard(red=red, blue=blue, resilience=resilience)
