@@ -27,15 +27,17 @@ there is no path to the target that skips them.
 | Package | Role |
 | --- | --- |
 | `authz/` | **Built first.** Ownership verification, scope engine, consent, hash-chained audit log, the gate. |
-| `range/` | Lifecycle for the bundled sandbox target (in-process `http.server`; Docker is a future swap-in behind the same `Range` interface). |
+| `range/` | Lifecycle for the bundled sandbox target. In-process `http.server` (tested default) **and** a Docker-backed range (`docker_runner.py` + `Dockerfile` + compose) behind the same `Range` interface. |
 | `scenarios/` | Pydantic scenario schema + seeded randomizer + `shop-01` YAML. |
 | `detect/` | Gated outbound client (the only way out), non-destructive checks, findings + OWASP catalog. |
 | `telemetry/` | Append-only event store (replay source of truth) + benign traffic generator. |
 | `engine/` | Referee tick loop, action models + blue whitelist, scoring, resilience score, ATT&CK map, kill switch. |
-| `agents/` | Agent interface + scripted red / blue / no-op baselines (LLM teams are a later milestone). |
+| `agents/` | Agent interface + scripted red / blue / no-op baselines + provider-agnostic LLM agents (`llm.py`, Anthropic adapter behind the `llm` extra). |
 | `report/` | Resilience audit report generator (HTML / Markdown / PDF). |
-| `api/` | Optional FastAPI + WebSocket live arena (`api` extra). |
-| `cli.py` | Typer CLI: `run`, `replay`, `scenarios`, `verify-audit`. |
+| `leaderboard.py` | Benchmark harness: red × blue agents across seeds, ranked. |
+| `api/` | Optional FastAPI + WebSocket live arena + REST (`api` extra). |
+| `web/` | Next.js + React + React Flow frontend: live arena, leaderboard, report. |
+| `cli.py` | Typer CLI: `run`, `replay`, `scenarios`, `bench`, `verify-audit`. |
 | `engagement.py` | The orchestrator that wires it all into one `run_engagement`. |
 
 ## Why the referee is the single authority

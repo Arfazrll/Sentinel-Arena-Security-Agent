@@ -42,17 +42,43 @@ Other commands:
 arena scenarios                         # list scenarios
 arena replay var/engagements/shop-01-42 # re-print the timeline + score
 arena verify-audit <dir>/audit.jsonl    # check the tamper-evident hash chain
+arena bench --seeds 42,7,101,2,5        # leaderboard across agents + seeds
 ```
 
-## Watch it live (optional)
+## Leaderboard (honest benchmark)
+
+`arena bench` runs a red × blue agent cross-product over many seeds. Agents are
+registry entries, so a future LLM/MCP agent appears here the same way. Current
+results on `shop-01` over 5 seeds (42, 7, 101, 2, 5):
+
+| Red | Blue | Runs | Attacker win % | Mean resilience | Mean red | Mean blue | Mean ticks-to-detect |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| scripted | scripted | 5 | 0% | 88.0 | 13.0 | 48.0 | 1.0 |
+| scripted | noop | 5 | 100% | 30.0 | 62.0 | 20.0 | – |
+
+Read: the scripted defender detects the attacker on tick 1 and stops every flag
+capture (0% attacker win, resilience 88); a passive defender loses every time
+(100% attacker win, resilience 30). Only two agents are registered today, so the
+table is small — but it is produced by the real harness, not hand-written.
+
+## Watch it live
+
+Two frontends. A **Next.js app** (the primary UI — live arena with a React Flow
+network map, leaderboard, and report pages):
 
 ```bash
 uv pip install -e ".[api]"
-uvicorn sentinel_arena.api.server:app
-# open http://127.0.0.1:8000  — split-screen red/blue, network map, live score
+uvicorn sentinel_arena.api.server:app      # backend on :8000
+
+cd web && npm install && npm run dev       # UI on http://localhost:3000
 ```
 
-PDF export of the audit report turns on with `uv pip install -e ".[pdf]"`.
+Or a zero-build **single served page** at `http://127.0.0.1:8000` (same backend,
+no Node needed).
+
+PDF export turns on with `.[pdf]`. An LLM red/blue agent (`--red llm` / `--blue
+llm`) turns on with `.[llm]` and an `ANTHROPIC_API_KEY`. A Docker-hosted range
+(`range_backend="docker"`) turns on with `.[docker]`.
 
 ## What's here
 
@@ -76,21 +102,34 @@ A full end-to-end vertical slice, built in the brief's milestone order:
   must beat) + a no-op blue to prove scenarios are solvable.
 - **Resilience report** (`report`) — HTML / Markdown / PDF, OWASP mapping,
   severity, mitigations, timeline, and the audit trail.
-- **Live arena API** (`api`) — FastAPI + WebSocket split-screen view.
-- **CLI** (`cli.py`) and the **orchestrator** (`engagement.py`).
-- **CI** that runs the scripted-bot smoke tests and a safety-invariant gate.
+- **Live arena API** (`api`) — FastAPI + WebSocket.
+- **Next.js frontend** (`web/`) — React + React Flow live arena, leaderboard, and
+  report pages. Builds and type-checks cleanly.
+- **Leaderboard** (`leaderboard.py`) — real benchmark harness across agents + seeds.
+- **LLM agents** (`agents/llm.py`) — provider-agnostic, plug into the same
+  interface; Anthropic adapter behind the `llm` extra.
+- **Docker-backed range** (`range/docker_runner.py` + `Dockerfile` + compose) —
+  same `Range` interface, internal network, no docker.sock.
+- **CLI** (`cli.py`), the **orchestrator** (`engagement.py`), and **CI** that runs
+  the scripted-bot smoke tests + a safety-invariant gate.
 
-**79 tests passing.** See [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md) and
-[`docs/authz.md`](docs/authz.md).
+**88 Python tests passing** + the Next.js app builds. See
+[`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/authz.md`](docs/authz.md),
+[`web/README.md`](web/README.md), and [`docs/DEMO.md`](docs/DEMO.md).
 
-## Not yet built (honest status)
+## Honest status of the harder pieces
 
-LLM-backed red/blue agents (provider-agnostic), the Docker-backed range,
-multi-tenant/RBAC/OAuth platform security, the model leaderboard across seeded
-runs, MCP bring-your-own-agent, OpenTelemetry tracing, and the Next.js web app.
-The current arena view is a single served HTML page, not a Next.js app. The
-interfaces (`Range`, `Agent`, the gated client) are shaped so these slot in
-without touching the safety core.
+- **LLM agents** are written and unit-tested with a fake client, but not yet run
+  against a live model here (needs an API key).
+- **The Docker range** is written to the same interface but **not exercised by
+  the offline suite** (this environment has no Docker); the in-process range is
+  the tested default. Shipping request telemetry out of the container to the
+  blue team's log store is a further step.
+- **The demo GIF** must be recorded on your machine — see [`docs/DEMO.md`](docs/DEMO.md).
+
+Still not built: multi-tenant/RBAC/OAuth + secrets vault, MCP bring-your-own-agent,
+and OpenTelemetry tracing. The `Range`, `Agent`, and gated-client interfaces are
+shaped so these slot in without touching the safety core.
 
 ## Develop
 

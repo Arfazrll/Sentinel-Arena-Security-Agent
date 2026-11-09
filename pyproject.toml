@@ -27,6 +27,14 @@ api = [
 pdf = [
     "reportlab>=4.0",
 ]
+# Docker-backed range (alternative to the tested in-process range).
+docker = [
+    "docker>=7.0",
+]
+# LLM-backed agents (provider-agnostic). Bring your own API key.
+llm = [
+    "anthropic>=0.40",
+]
 dev = [
     "pytest>=8.0",
     "pyyaml>=6.0",

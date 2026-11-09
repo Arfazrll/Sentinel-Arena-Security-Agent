@@ -20,15 +20,27 @@ from pathlib import Path
 
 try:
     from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+    from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 except Exception as e:  # pragma: no cover
     raise RuntimeError(
         "The API requires the 'api' extra: pip install 'sentinel-arena[api]'"
     ) from e
 
+import json as _json
+
 from ..engagement import run_engagement
+from ..scenarios.loader import list_scenarios
 
 app = FastAPI(title="Sentinel Arena")
+# The Next.js dev server (localhost:3000) and the built app talk to this API
+# cross-origin, so allow it. Tighten the origins for a real deployment.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 _STATIC = Path(__file__).parent / "static"
 
 # engagement_id -> {"events": [...], "status": str, "result": dict|None, "dir": str}
@@ -72,6 +84,43 @@ def start_engagement(scenario: str = "shop-01", seed: int = 42, blue: str = "scr
                      args=(engagement_id, scenario, seed, blue),
                      daemon=True).start()
     return {"id": engagement_id}
+
+
+@app.get("/scenarios")
+def scenarios():
+    return {"scenarios": list_scenarios()}
+
+
+@app.get("/engagements/{engagement_id}")
+def engagement_status(engagement_id: str):
+    state = _ENGAGEMENTS.get(engagement_id)
+    if state is None:
+        return JSONResponse({"error": "unknown engagement"}, status_code=404)
+    return {"id": engagement_id, "status": state["status"],
+            "events": len(state["events"]), "result": state["result"]}
+
+
+@app.get("/engagements/{engagement_id}/result")
+def engagement_result(engagement_id: str):
+    """Full scoreboard + findings JSON for the native report page."""
+    state = _ENGAGEMENTS.get(engagement_id)
+    if not state or not state.get("dir"):
+        return JSONResponse({"error": "not ready"}, status_code=404)
+    result_file = Path(state["dir"]) / "result.json"
+    if not result_file.exists():
+        return JSONResponse({"error": "not ready"}, status_code=404)
+    return _json.loads(result_file.read_text(encoding="utf-8"))
+
+
+@app.get("/leaderboard")
+def leaderboard(seeds: str = "42,7,101", scenario: str = "shop-01"):
+    """Run a quick benchmark across registered agents and return the table data."""
+    from ..leaderboard import run_benchmark
+
+    seed_list = [int(x) for x in seeds.split(",") if x.strip()]
+    stats = run_benchmark(seeds=seed_list, scenario=scenario)
+    return {"scenario": scenario, "seeds": seed_list,
+            "rows": [s.model_dump() for s in stats]}
 
 
 @app.get("/engagements/{engagement_id}/report", response_class=HTMLResponse)

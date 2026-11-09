@@ -53,6 +53,11 @@ class AppConfig:
     blocked_actors: set[str] = field(default_factory=set)
     sink: object = None  # InMemoryEventSink | None
     tick_provider: object = None  # callable -> int, optional
+    # Control-plane token. When set (containerized range), the host can toggle
+    # the blocklist over an internal, token-gated endpoint. None = endpoint
+    # does not exist at all (the default, in-process path mutates the set
+    # directly instead).
+    control_token: str | None = None
 
     def current_tick(self) -> int:
         try:
@@ -110,6 +115,13 @@ class _Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = parsed.path
         actor = self._actor()
+
+        # Control plane (only exists when a control token is configured). Used
+        # by the Docker-backed range to toggle the blocklist from the host. It
+        # is token-gated, not recorded as range traffic, and never part of a
+        # scenario's scope.
+        if self.cfg.control_token and path.startswith("/__arena/"):
+            return self._handle_control(parsed)
 
         # Health always answers (service-liveness SLA), even for blocked actors.
         if path == "/health":
@@ -181,6 +193,22 @@ class _Handler(BaseHTTPRequestHandler):
 
     def do_HEAD(self):
         return self.do_GET()
+
+    def _handle_control(self, parsed) -> None:
+        # Requires the shared control token; bypasses the request sink entirely.
+        if self.headers.get("X-Arena-Control") != self.cfg.control_token:
+            self.send_response(403)
+            self.end_headers()
+            return
+        actor = parse_qs(parsed.query).get("actor", [""])[0]
+        if parsed.path == "/__arena/block" and actor:
+            self.cfg.blocked_actors.add(actor)
+        elif parsed.path == "/__arena/unblock" and actor:
+            self.cfg.blocked_actors.discard(actor)
+        self.send_response(200)
+        self.send_header("Content-Type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"ok")
 
 
 def start_app(config: AppConfig, host: str = "127.0.0.1", port: int = 0):

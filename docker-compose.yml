@@ -1,0 +1,34 @@
+# Single-node demo: the bundled vulnerable range on an INTERNAL network with no
+# internet route. This is the manual/explore path; the tested default range runs
+# in-process (no Docker). docker.sock is never mounted into any container.
+#
+#   docker compose up --build range
+#
+# The engine can also drive a container range directly via:
+#   run_engagement(..., range_backend="docker")   # needs the 'docker' extra
+
+services:
+  range:
+    build:
+      context: .
+      dockerfile: sentinel_arena/range/Dockerfile
+    image: sentinel-arena-range:latest
+    environment:
+      ARENA_TOKEN: "demo-token"
+      ARENA_FLAG_PATH: "/files"
+      ARENA_ADMIN_PATH: "/admin"
+      ARENA_FLAG_VALUE: "FLAG{demo}"
+      ARENA_CREDENTIAL: "demo-cred"
+      # Set a control token to allow host-side blocklist toggling.
+      ARENA_CONTROL_TOKEN: "demo-control"
+    ports:
+      - "127.0.0.1:8080:8080"   # loopback only
+    networks:
+      - internal
+    mem_limit: 256m
+    cpus: 1.0
+
+networks:
+  internal:
+    driver: bridge
+    internal: true   # no route to the internet

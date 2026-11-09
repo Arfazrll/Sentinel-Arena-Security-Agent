@@ -55,9 +55,25 @@ class EngagementArtifacts:
     out_dir: Path
     events_path: Path
     audit_path: Path
-    report_html: Path
-    report_md: Path
+    report_html: Path | None
+    report_md: Path | None
     report_pdf: Path | None
+
+
+def _build_red(name: str):
+    if name == "llm":
+        from .agents.llm import LLMRed, default_anthropic_client
+        return LLMRed(default_anthropic_client())
+    return ScriptedRed()
+
+
+def _build_blue(name: str):
+    if name == "llm":
+        from .agents.llm import LLMBlue, default_anthropic_client
+        return LLMBlue(default_anthropic_client())
+    if name == "noop":
+        return NoOpBlue()
+    return ScriptedBlue()
 
 
 def _make_scope(now) -> Scope:
@@ -79,8 +95,12 @@ def run_engagement(
     out_dir: str | Path | None = None,
     red_name: str = "scripted",
     blue_name: str = "scripted",
+    red_agent=None,
+    blue_agent=None,
     killswitch: KillSwitch | None = None,
     on_event=None,
+    generate_report: bool = True,
+    range_backend: str = "inprocess",
 ) -> EngagementArtifacts:
     scenario = load_scenario(scenario_id)
     randomized = scenario.randomized(seed)
@@ -99,7 +119,14 @@ def run_engagement(
     secret = _secrets.token_bytes(32)
     challenge = make_challenge(USER, HOST, secret=secret)
 
-    rng = bring_up(scenario, randomized, token=challenge.token, sink=sink)
+    if range_backend == "docker":
+        # Container-hosted range (internal network, no internet). Not exercised
+        # by the offline suite; requires Docker + the 'docker' extra. The engine
+        # treats it identically — same Range surface.
+        from .range.docker_runner import bring_up_docker
+        rng = bring_up_docker(scenario, randomized, token=challenge.token)
+    else:
+        rng = bring_up(scenario, randomized, token=challenge.token, sink=sink)
     try:
         now = datetime.now(timezone.utc)
         scope = _make_scope(now)
@@ -125,8 +152,8 @@ def run_engagement(
             seed=seed,
         )
 
-        red = ScriptedRed()
-        blue = ScriptedBlue() if blue_name == "scripted" else NoOpBlue()
+        red = red_agent or _build_red(red_name)
+        blue = blue_agent or _build_blue(blue_name)
 
         referee = Referee(ctx, red, blue, killswitch=killswitch,
                           traffic=BenignTraffic())
@@ -151,7 +178,10 @@ def run_engagement(
         ),
         encoding="utf-8",
     )
-    report_html, report_md, report_pdf = write_report(result, audit, out_dir)
+    if generate_report:
+        report_html, report_md, report_pdf = write_report(result, audit, out_dir)
+    else:
+        report_html = report_md = report_pdf = None
 
     return EngagementArtifacts(
         result=result,

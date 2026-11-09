@@ -62,6 +62,30 @@ def scenarios():
 
 
 @app.command()
+def bench(
+    seeds: str = typer.Option("42,7,101,2,5", help="Comma-separated seeds."),
+    scenario: str = typer.Option("shop-01"),
+    out: str = typer.Option("var/bench", help="Output directory."),
+):
+    """Run a leaderboard benchmark across red x blue agents and seeds."""
+    from .leaderboard import run_benchmark, to_markdown
+
+    seed_list = [int(x) for x in seeds.split(",") if x.strip()]
+    typer.echo(f"Benchmarking {scenario} over {len(seed_list)} seed(s) ...")
+    stats = run_benchmark(seeds=seed_list, scenario=scenario)
+    md = to_markdown(stats, seed_list)
+    out_dir = Path(out)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    (out_dir / "leaderboard.md").write_text(md, encoding="utf-8")
+    (out_dir / "leaderboard.json").write_text(
+        json.dumps([s.model_dump() for s in stats], indent=2), encoding="utf-8")
+    typer.echo("")
+    typer.echo(md)
+    typer.echo("")
+    typer.echo(f"  Written: {out_dir / 'leaderboard.md'}")
+
+
+@app.command()
 def replay(engagement_dir: str):
     """Replay an engagement's timeline and score from its stored events."""
     d = Path(engagement_dir)
