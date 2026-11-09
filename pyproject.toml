@@ -35,6 +35,11 @@ docker = [
 llm = [
     "anthropic>=0.40",
 ]
+# Model Context Protocol server: drive assessments + pull findings from any MCP
+# client (Claude, IDEs, other agents). Orchestration/reporting only.
+mcp = [
+    "mcp>=1.2",
+]
 dev = [
     "pytest>=8.0",
     "pyyaml>=6.0",

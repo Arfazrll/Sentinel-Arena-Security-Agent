@@ -1,0 +1,65 @@
+id: api-01
+name: "Payments API"
+description: >
+  A JSON API gateway for a payments service. It leaks its framework version,
+  serves a wide-open CORS policy, lacks protective headers and spills stack
+  traces on error. The admin console that fronts it is reachable without
+  authentication, which is how the planted flag is ultimately exposed.
+
+max_ticks: 12
+
+health:
+  path: /health
+  expect_status: 200
+
+flag_path: /vault
+admin_path: /ops
+
+randomize:
+  - flag_path
+  - admin_path
+
+weaknesses:
+  - id: missing-headers
+    owasp: A05
+    severity: medium
+    title: "Missing security response headers"
+    detect: security_headers
+    mitigation: >
+      Set X-Content-Type-Options, X-Frame-Options, and a Content-Security-Policy
+      on every response.
+
+  - id: cors-wildcard
+    owasp: A05
+    severity: medium
+    title: "Wide-open CORS policy"
+    detect: cors_wildcard
+    mitigation: >
+      Reflect only an explicit allowlist of trusted origins; never combine a
+      wildcard origin with credentials.
+
+  - id: version-disclosure
+    owasp: A06
+    severity: low
+    title: "Component version disclosed in headers"
+    detect: version_disclosure
+    mitigation: >
+      Suppress version banners and track component versions against known-CVE
+      feeds.
+
+  - id: verbose-errors
+    owasp: A05
+    severity: low
+    title: "Verbose server errors leak stack traces"
+    detect: verbose_errors
+    mitigation: >
+      Return generic error pages; log details server-side only.
+
+  - id: exposed-admin
+    owasp: A01
+    severity: high
+    title: "Admin console reachable without authentication"
+    detect: exposed_admin
+    mitigation: >
+      Require authentication and authorization on all admin routes; do not rely
+      on an unguessable path.

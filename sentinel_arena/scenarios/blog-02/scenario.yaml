@@ -1,0 +1,64 @@
+id: blog-02
+name: "Community Blog"
+description: >
+  A content and comments platform. User input is reflected without encoding,
+  session cookies ship without HttpOnly/Secure, an uploads directory is listable,
+  and content pages lack protective headers. The staff admin area is
+  unauthenticated and leads to the planted flag.
+
+max_ticks: 12
+
+health:
+  path: /health
+  expect_status: 200
+
+flag_path: /drafts
+admin_path: /staff
+
+randomize:
+  - flag_path
+  - admin_path
+
+weaknesses:
+  - id: reflected-xss
+    owasp: A03
+    severity: high
+    title: "Reflected input without output encoding"
+    detect: reflected_xss
+    mitigation: >
+      Apply context-aware output encoding to all user input; add a strict CSP as
+      defense in depth.
+
+  - id: insecure-cookie
+    owasp: A07
+    severity: medium
+    title: "Session cookie without HttpOnly/Secure"
+    detect: insecure_cookie
+    mitigation: >
+      Set HttpOnly, Secure and SameSite on all session cookies.
+
+  - id: directory-listing
+    owasp: A05
+    severity: medium
+    title: "Directory listing exposed"
+    detect: directory_listing
+    mitigation: >
+      Disable directory indexing; serve only explicit files.
+
+  - id: missing-headers
+    owasp: A05
+    severity: medium
+    title: "Missing security response headers"
+    detect: security_headers
+    mitigation: >
+      Set X-Content-Type-Options, X-Frame-Options, and a Content-Security-Policy
+      on every response.
+
+  - id: exposed-admin
+    owasp: A01
+    severity: high
+    title: "Admin area reachable without authentication"
+    detect: exposed_admin
+    mitigation: >
+      Require authentication and authorization on all admin routes; do not rely
+      on an unguessable path.

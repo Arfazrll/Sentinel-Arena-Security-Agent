@@ -39,6 +39,7 @@ arena run --blue noop        # scripted red reaches the flag; resilience ~30
 Other commands:
 
 ```bash
+arena campaign --depth deep             # assess a target across the whole matrix
 arena scenarios                         # list scenarios
 arena replay var/engagements/shop-01-42 # re-print the timeline + score
 arena verify-audit <dir>/audit.jsonl    # check the tamper-evident hash chain
@@ -46,6 +47,70 @@ arena bench --seeds 42,7,101,2,5        # leaderboard across agents + seeds
 arena agents                            # list registered red/blue agents
 arena export <dir> --format sarif       # SARIF / ATT&CK Navigator layer / CSV
 ```
+
+## Assess a target in one step
+
+A single `arena run` is one match. A real assessment is the question above that:
+**"how resilient is this target overall, and what do I fix first?"** That is a
+*campaign* — point it at a target and it runs a whole matrix of scenarios ×
+attackers × defenders × seeds, then distills one verdict.
+
+```bash
+arena campaign --depth standard --label "Corner Shop review"
+```
+
+```
+  Posture grade: F
+  Resilience:    worst 30 / mean 53 / best 88 (of 100)
+  Attacker win:  62% of graded runs
+  Runs:          24
+
+  Prioritized remediation plan:
+    1. [P1] high     Reflected input without output encoding  (fix <= 7d, seen 6x)
+    2. [P1] high     Admin panel reachable without authentication  (fix <= 7d, seen 6x)
+    3. [P2] medium   Missing security response headers  (fix <= 30d, seen 6x)
+    4. [P2] medium   Sensitive config file exposed under web root  (fix <= 30d, seen 6x)
+    5. [P3] low      Verbose server errors leak stack traces  (fix <= 90d, seen 6x)
+
+  Report:  var/campaigns/<id>/campaign.md
+```
+
+Each finding already carries its fix, CWE, CVSS band, remediation priority + SLA
+and indicative control mapping. `--depth deep` fans out into the **hundreds** of
+simulated engagements. The same thing is a one-click flow in the web app's
+**Assessment** page (paste a target, pick a depth, watch progress, get the plan)
+and an MCP tool (below).
+
+**The target.** By default a campaign runs against the bundled sandbox
+(127.0.0.1) — no setup, fully safe. To assess a host you own, prove ownership
+first (DNS TXT / well-known file, via the gate or the MCP `verify_target` tool),
+then pass `--i-own-this`. An unproven external target is **refused** — the
+authorization gate is never bypassed, and external assessment is non-destructive,
+observation-only. See [`docs/SAFETY.md`](docs/SAFETY.md).
+
+## Drive it from an MCP client
+
+Any MCP client (Claude, an IDE, another agent) can run assessments and read the
+results:
+
+```bash
+uv pip install -e ".[mcp]"
+python -m sentinel_arena.mcp.server        # stdio transport
+```
+
+Tools: `list_scenarios`, `list_agents`, `verify_target` (issue an ownership
+challenge for a host), and `run_assessment` (run a campaign → prioritized
+vulnerabilities + mitigations). The surface is **orchestration and reporting
+only** — it exposes no attack primitive and cannot make the platform act against
+a host the gate has not cleared.
+
+## Scale & enterprise
+
+How this goes from one node to a multi-tenant service for tens of thousands of
+users — caching, load balancing, Postgres (with an append-only audit ledger),
+Redis queue + worker tier, per-job sandboxes, SSO/RBAC, secrets vault and
+observability — is written up, with a clear line between what ships today and the
+target architecture, in [`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md).
 
 ## Leaderboard (honest benchmark)
 
@@ -145,6 +210,12 @@ A full end-to-end vertical slice, built in the brief's milestone order:
 - **Next.js frontend** (`web/`) — React + React Flow live arena, leaderboard, and
   report pages. Builds and type-checks cleanly.
 - **Leaderboard** (`leaderboard.py`) — real benchmark harness across agents + seeds.
+- **Campaign engine** (`campaign.py`) — one target → a matrix of scenarios ×
+  attackers × defenders × seeds → one aggregated, risk-ranked verdict with a
+  prioritized remediation plan. CLI (`arena campaign`), API (`/campaigns`), web
+  (**Assessment** page) and MCP all sit on it.
+- **MCP server** (`mcp/server.py`) — orchestration + reporting tools over stdio;
+  no attack primitive, gate never bypassed.
 - **LLM agents** (`agents/llm.py`) — provider-agnostic, plug into the same
   interface; Anthropic adapter behind the `llm` extra.
 - **Docker-backed range** (`range/docker_runner.py` + `Dockerfile` + compose) —
@@ -152,9 +223,10 @@ A full end-to-end vertical slice, built in the brief's milestone order:
 - **CLI** (`cli.py`), the **orchestrator** (`engagement.py`), and **CI** that runs
   the scripted-bot smoke tests + a safety-invariant gate.
 
-**105 Python tests passing** + the Next.js app builds. See
+**112 Python tests passing** + the Next.js app builds. See
 [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md), [`docs/authz.md`](docs/authz.md),
-[`web/README.md`](web/README.md), and [`docs/DEMO.md`](docs/DEMO.md).
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md), [`web/README.md`](web/README.md), and
+[`docs/DEMO.md`](docs/DEMO.md).
 
 ## Honest status of the harder pieces
 
@@ -166,9 +238,13 @@ A full end-to-end vertical slice, built in the brief's milestone order:
   blue team's log store is a further step.
 - **The demo GIF** must be recorded on your machine — see [`docs/DEMO.md`](docs/DEMO.md).
 
-Still not built: multi-tenant/RBAC/OAuth + secrets vault, MCP bring-your-own-agent,
-and OpenTelemetry tracing. The `Range`, `Agent`, and gated-client interfaces are
-shaped so these slot in without touching the safety core.
+The **MCP server** exposes assessment orchestration + reporting today; an MCP
+*bring-your-own-agent* (a model driving red/blue moves live over MCP) is the next
+step on the same registry seam. Still not built: multi-tenant/RBAC/OAuth +
+secrets vault and OpenTelemetry tracing — the target design for these is in
+[`docs/DEPLOYMENT.md`](docs/DEPLOYMENT.md). The `Range`, `Agent`, and
+gated-client interfaces are shaped so these slot in without touching the safety
+core.
 
 ## Develop
 

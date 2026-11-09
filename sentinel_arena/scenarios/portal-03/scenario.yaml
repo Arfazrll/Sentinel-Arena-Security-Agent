@@ -1,0 +1,63 @@
+id: portal-03
+name: "Staff Portal"
+description: >
+  An internal staff portal that is better hardened on headers but still issues
+  insecure session cookies, advertises its stack version, leaks stack traces on
+  error, and keeps a secret config file under the web root. Its admin console is
+  unauthenticated and exposes the planted flag.
+
+max_ticks: 12
+
+health:
+  path: /health
+  expect_status: 200
+
+flag_path: /records
+admin_path: /console
+
+randomize:
+  - flag_path
+  - admin_path
+
+weaknesses:
+  - id: insecure-cookie
+    owasp: A07
+    severity: medium
+    title: "Session cookie without HttpOnly/Secure"
+    detect: insecure_cookie
+    mitigation: >
+      Set HttpOnly, Secure and SameSite on all session cookies.
+
+  - id: version-disclosure
+    owasp: A06
+    severity: low
+    title: "Component version disclosed in headers"
+    detect: version_disclosure
+    mitigation: >
+      Suppress version banners and track component versions against known-CVE
+      feeds.
+
+  - id: verbose-errors
+    owasp: A05
+    severity: low
+    title: "Verbose server errors leak stack traces"
+    detect: verbose_errors
+    mitigation: >
+      Return generic error pages; log details server-side only.
+
+  - id: sensitive-file
+    owasp: A05
+    severity: medium
+    title: "Sensitive config file exposed under web root"
+    detect: sensitive_file
+    mitigation: >
+      Remove secrets from the web root; deny access to config files at the server.
+
+  - id: exposed-admin
+    owasp: A01
+    severity: high
+    title: "Admin console reachable without authentication"
+    detect: exposed_admin
+    mitigation: >
+      Require authentication and authorization on all admin routes; do not rely
+      on an unguessable path.

@@ -88,6 +88,62 @@ def bench(
 
 
 @app.command()
+def campaign(
+    target: str = typer.Option("127.0.0.1", help="Target label. External hosts "
+                               "require proven ownership (see --i-own-this)."),
+    depth: str = typer.Option("standard", help="quick | standard | deep. "
+                              "deep runs into the hundreds of engagements."),
+    scenarios_opt: str = typer.Option("", "--scenarios", help="Comma-separated "
+                                      "scenario ids (default: all)."),
+    label: str = typer.Option("", help="Human label for the assessment."),
+    out: str = typer.Option("var/campaigns", help="Output directory."),
+    workers: int = typer.Option(1, help="Parallel engagements (each is isolated)."),
+    i_own_this: bool = typer.Option(False, "--i-own-this", help="Assert ownership "
+                                    "of a non-sandbox target has been proven."),
+):
+    """Assess a target across a whole matrix of scenarios and produce one
+    prioritized vulnerabilities-and-mitigations verdict."""
+    from .campaign import CampaignPlan, run_campaign, save_campaign
+
+    sel = [s.strip() for s in scenarios_opt.split(",") if s.strip()]
+    plan = CampaignPlan(target=target, depth=depth, scenarios=sel, label=label,
+                        ownership_proven=i_own_this)
+    total = plan.total_runs()
+    typer.echo(f"Campaign on {target!r} ({depth}): planning ~{total} graded runs "
+               f"+ a posture scan ...")
+
+    state = {"n": 0}
+
+    def _progress(done, tot, lbl):
+        state["n"] = done
+        if done == tot or done % 5 == 0:
+            typer.echo(f"  [{done:>3}/{tot}] {lbl}")
+
+    res = run_campaign(plan, on_progress=_progress, max_workers=workers)
+    out_dir = Path(out) / res.id
+    save_campaign(res, out_dir)
+
+    typer.echo("")
+    typer.secho(f"  Posture grade: {res.posture_grade}", bold=True,
+                fg="green" if res.posture_grade in ("A", "B")
+                else "yellow" if res.posture_grade == "C" else "red")
+    typer.echo(f"  Resilience:    worst {res.worst_resilience} / mean "
+               f"{res.mean_resilience:.0f} / best {res.best_resilience} (of 100)")
+    typer.echo(f"  Attacker win:  {res.attacker_win_rate*100:.0f}% of graded runs")
+    typer.echo(f"  Runs:          {res.runs}")
+    typer.echo("")
+    typer.echo("  Prioritized remediation plan:")
+    for i, v in enumerate(res.vulnerabilities, 1):
+        typer.echo(f"   {i:>2}. [{v.priority}] {v.severity:<8} {v.title}  "
+                   f"(fix <= {v.fix_sla_days}d, seen {v.occurrences}x)")
+    if not res.vulnerabilities:
+        typer.echo("    (no findings surfaced)")
+    typer.echo("")
+    typer.echo(f"  Report:  {out_dir / 'campaign.md'}")
+    typer.echo(f"  JSON:    {out_dir / 'campaign.json'}")
+
+
+@app.command()
 def replay(engagement_dir: str):
     """Replay an engagement's timeline and score from its stored events."""
     d = Path(engagement_dir)

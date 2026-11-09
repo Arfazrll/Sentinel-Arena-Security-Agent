@@ -62,6 +62,8 @@ _LOCK = threading.Lock()
 # engagement_id -> state dict (see _new_state)
 _ENGAGEMENTS: dict[str, dict] = {}
 _BENCHMARKS: dict[str, dict] = {}
+_CAMPAIGNS: dict[str, dict] = {}
+CAMP_ROOT = DATA_DIR / "campaigns"
 
 
 def _now() -> str:
@@ -455,6 +457,101 @@ def benchmark_status(job_id: str):
     if job is None:
         raise HTTPException(404, "unknown benchmark")
     return job
+
+
+# --- campaigns: assess a target across a matrix -> one verdict -------------
+def _load_campaign_history() -> None:
+    if not CAMP_ROOT.exists():
+        return
+    for child in sorted(CAMP_ROOT.iterdir()):
+        data = _read_json(child / "campaign.json")
+        if data and data.get("id") not in _CAMPAIGNS:
+            _CAMPAIGNS[data["id"]] = {
+                "id": data["id"], "status": "done", "done": data["runs"],
+                "total": data["runs"], "current": "", "result": data,
+                "finished_at": data.get("created_at", "")}
+
+
+def _run_campaign_job(job_id: str, plan) -> None:
+    from ..campaign import run_campaign, save_campaign
+
+    job = _CAMPAIGNS[job_id]
+
+    def progress(done, total, label):
+        job.update(done=done, total=total, current=label)
+
+    try:
+        res = run_campaign(plan, on_progress=progress, campaign_id=job_id)
+        save_campaign(res, CAMP_ROOT / job_id)
+        job["result"] = res.model_dump()
+        job["status"] = "done"
+        job["finished_at"] = _now()
+    except Exception as e:
+        job["status"] = "error"
+        job["error"] = str(e)
+
+
+@app.post("/campaigns")
+def start_campaign(target: str = "127.0.0.1", depth: str = "standard",
+                   scenarios_csv: str = "", label: str = "",
+                   i_own_this: bool = False):
+    from ..campaign import CampaignPlan
+
+    if depth not in ("quick", "standard", "deep"):
+        raise HTTPException(400, "depth must be quick, standard or deep")
+    sel = [s.strip() for s in scenarios_csv.split(",") if s.strip()]
+    for s in sel:
+        if s not in list_scenarios():
+            raise HTTPException(400, f"unknown scenario {s!r}")
+    if any(j["status"] == "running" for j in _CAMPAIGNS.values()):
+        raise HTTPException(429, "a campaign is already running")
+    plan = CampaignPlan(target=target, depth=depth, scenarios=sel, label=label,
+                        ownership_proven=i_own_this)
+    try:
+        total = plan.total_runs()
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    job_id = "camp-" + uuid.uuid4().hex[:10]
+    _CAMPAIGNS[job_id] = {"id": job_id, "status": "running", "target": target,
+                          "depth": depth, "label": label, "done": 0,
+                          "total": total, "current": "", "result": None,
+                          "started_at": _now()}
+    threading.Thread(target=_run_campaign_job, args=(job_id, plan),
+                     daemon=True).start()
+    return {"id": job_id, "total": total}
+
+
+@app.get("/campaigns")
+def list_campaigns(limit: int = Query(100, ge=1, le=500)):
+    _load_campaign_history()
+    jobs = sorted(_CAMPAIGNS.values(),
+                  key=lambda j: j.get("finished_at") or j.get("started_at") or "",
+                  reverse=True)
+    return [{k: j.get(k) for k in ("id", "status", "target", "depth", "label",
+                                   "done", "total", "started_at", "finished_at")}
+            | ({"grade": j["result"]["posture_grade"],
+                "worst_resilience": j["result"]["worst_resilience"],
+                "findings": len(j["result"]["vulnerabilities"])}
+               if j.get("result") else {})
+            for j in jobs[:limit]]
+
+
+@app.get("/campaigns/{job_id}")
+def campaign_status(job_id: str):
+    _load_campaign_history()
+    job = _CAMPAIGNS.get(job_id)
+    if job is None:
+        raise HTTPException(404, "unknown campaign")
+    return job
+
+
+@app.get("/campaigns/{job_id}/report", response_class=PlainTextResponse)
+def campaign_report(job_id: str):
+    job = _CAMPAIGNS.get(job_id)
+    if job is None or not job.get("result"):
+        raise HTTPException(404, "no finished campaign with that id")
+    from ..campaign import CampaignResult, to_markdown
+    return to_markdown(CampaignResult.model_validate(job["result"]))
 
 
 @app.get("/leaderboard")

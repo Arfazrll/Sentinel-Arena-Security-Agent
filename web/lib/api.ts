@@ -237,6 +237,89 @@ export type BenchmarkJob = {
   error?: string;
 };
 
+export type CampaignVuln = {
+  rule_id: string;
+  title: string;
+  owasp: string;
+  owasp_title: string;
+  severity: Severity;
+  cwe: string[];
+  cvss_band: string;
+  risk_score: number;
+  priority: "P1" | "P2" | "P3" | "P4";
+  fix_sla_days: number;
+  effort: "S" | "M" | "L";
+  mitigation: string;
+  controls: Controls;
+  occurrences: number;
+  example_evidence: string;
+  example_url: string;
+};
+
+export type CampaignMatchup = {
+  red: string;
+  blue: string;
+  red_label: string;
+  blue_label: string;
+  runs: number;
+  attacker_win_rate: number;
+  mean_resilience: number;
+  worst_resilience: number;
+  mean_ticks_to_detect: number | null;
+};
+
+export type CampaignResult = {
+  id: string;
+  target: string;
+  label: string;
+  depth: string;
+  created_at: string;
+  runs: number;
+  scenarios: string[];
+  reds: string[];
+  blues: string[];
+  seeds: number[];
+  posture_grade: "A" | "B" | "C" | "D" | "F";
+  mean_resilience: number;
+  worst_resilience: number;
+  best_resilience: number;
+  attacker_win_rate: number;
+  vulnerabilities: CampaignVuln[];
+  severity_counts: Record<string, number>;
+  owasp_coverage: Record<string, number>;
+  matchups: CampaignMatchup[];
+};
+
+export type CampaignJob = {
+  id: string;
+  status: "running" | "done" | "error";
+  target: string;
+  depth: string;
+  label: string;
+  done: number;
+  total: number;
+  current: string;
+  result: CampaignResult | null;
+  started_at: string;
+  finished_at?: string;
+  error?: string;
+};
+
+export type CampaignBrief = {
+  id: string;
+  status: "running" | "done" | "error";
+  target: string;
+  depth: string;
+  label: string;
+  done: number;
+  total: number;
+  started_at: string;
+  finished_at?: string;
+  grade?: string;
+  worst_resilience?: number;
+  findings?: number;
+};
+
 export type AuditEntry = {
   seq: number;
   timestamp: string;
@@ -307,7 +390,22 @@ export const api = {
     ),
   benchmark: (id: string) => call<BenchmarkJob>(`/benchmarks/${id}`),
   latestBenchmark: () => call<BenchmarkJob>("/benchmarks/latest"),
+  startCampaign: (p: { target: string; depth: string; scenarios: string[]; label: string; i_own_this: boolean }) =>
+    call<{ id: string; total: number }>(
+      `/campaigns?${new URLSearchParams({
+        target: p.target,
+        depth: p.depth,
+        scenarios_csv: p.scenarios.join(","),
+        label: p.label,
+        i_own_this: String(p.i_own_this),
+      })}`,
+      { method: "POST" }
+    ),
+  campaign: (id: string) => call<CampaignJob>(`/campaigns/${id}`),
+  campaigns: () => call<CampaignBrief[]>("/campaigns"),
 };
+
+export const campaignReportUrl = (id: string) => `${API_BASE}/campaigns/${id}/report`;
 
 export const exportUrl = (id: string, fmt: string) => `${API_BASE}/engagements/${id}/export/${fmt}`;
 export const reportUrl = (id: string) => `${API_BASE}/engagements/${id}/report`;

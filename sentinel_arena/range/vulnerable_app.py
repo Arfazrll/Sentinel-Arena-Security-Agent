@@ -42,6 +42,23 @@ SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'",
 }
 
+# Every planted weakness the sandbox knows how to serve, keyed by the same
+# ``detect`` string a scenario uses. A scenario's weakness set selects which of
+# these are actually present, so different scenarios yield genuinely different
+# reports. The admin->flag discovery chain (info leak + admin + flag) is always
+# served regardless, so every scenario stays solvable.
+ALL_WEAKNESSES = {
+    "security_headers",     # A05: content pages lack protective headers
+    "reflected_xss",        # A03: input reflected without encoding
+    "exposed_admin",        # A01: admin reachable without auth (chain; always on)
+    "verbose_errors",       # A05: stack traces leaked on error
+    "sensitive_file",       # A05: secret config under web root
+    "insecure_cookie",      # A07: session cookie without HttpOnly/Secure
+    "cors_wildcard",        # A05: Access-Control-Allow-Origin: *
+    "version_disclosure",   # A06: outdated component advertised in a header
+    "directory_listing",    # A05: directory index exposed
+}
+
 
 @dataclass
 class AppConfig:
@@ -50,6 +67,10 @@ class AppConfig:
     admin_path: str
     flag_value: str
     credential: str
+    # Which planted weaknesses this instance serves. Defaults to all of them so
+    # a directly-constructed app (tests, ad-hoc use) is maximally vulnerable; the
+    # range passes a scenario-specific subset.
+    weaknesses: set[str] = field(default_factory=lambda: set(ALL_WEAKNESSES))
     blocked_actors: set[str] = field(default_factory=set)
     sink: object = None  # InMemoryEventSink | None
     tick_provider: object = None  # callable -> int, optional
@@ -88,6 +109,9 @@ class _Handler(BaseHTTPRequestHandler):
     def _actor(self) -> str:
         return self.headers.get("X-Arena-Actor", "anonymous")
 
+    def _has(self, key: str) -> bool:
+        return key in self.cfg.weaknesses
+
     def _record(self, status: int, marker: str = "") -> None:
         sink = self.cfg.sink
         if sink is not None:
@@ -97,7 +121,8 @@ class _Handler(BaseHTTPRequestHandler):
             )
 
     def _send(self, status: int, body: str, *, secure: bool = False,
-              content_type: str = "text/html; charset=utf-8", marker: str = "") -> None:
+              content_type: str = "text/html; charset=utf-8", marker: str = "",
+              extra_headers: dict[str, str] | None = None) -> None:
         data = body.encode("utf-8")
         self.send_response(status)
         self.send_header("Content-Type", content_type)
@@ -105,6 +130,8 @@ class _Handler(BaseHTTPRequestHandler):
         if secure:
             for k, v in SECURITY_HEADERS.items():
                 self.send_header(k, v)
+        for k, v in (extra_headers or {}).items():
+            self.send_header(k, v)
         self.end_headers()
         if self.command != "HEAD":
             self.wfile.write(data)
@@ -137,22 +164,51 @@ class _Handler(BaseHTTPRequestHandler):
                              content_type="text/plain")
 
         if path == "/":
-            # Planted info leak: an HTML comment discloses the admin path.
+            # Planted info leak: an HTML comment discloses the admin path. This
+            # is the first link of the discovery chain, so it is always present.
             body = (
                 "<!doctype html><html><head><title>Corner Shop</title></head>"
                 "<body><h1>Corner Shop</h1><p>Fresh deals daily.</p>"
                 f"<!-- staff: admin console at {self.cfg.admin_path} -->"
                 "</body></html>"
             )
-            # NOTE: intentionally missing security headers (planted A05).
-            return self._send(200, body)
+            extra: dict[str, str] = {}
+            if self._has("insecure_cookie"):
+                # Planted A07: session cookie without HttpOnly/Secure/SameSite.
+                extra["Set-Cookie"] = f"sa_session={self.cfg.credential}; Path=/"
+            if self._has("version_disclosure"):
+                # Planted A06: advertises a specific, outdated component version.
+                extra["X-Powered-By"] = "Express/4.17.1"
+            # secure headers present only when "security_headers" is NOT a
+            # planted weakness for this scenario.
+            return self._send(200, body, secure=not self._has("security_headers"),
+                             extra_headers=extra or None)
 
         if path == "/search":
             q = parse_qs(parsed.query).get("q", [""])[0]
-            # Planted reflected XSS: input echoed without encoding. We still
-            # html-escape nothing here on purpose; this is our own sandbox.
-            body = f"<html><body>Results for: {q}</body></html>"
+            if self._has("reflected_xss"):
+                # Planted A03: input echoed without output encoding.
+                body = f"<html><body>Results for: {q}</body></html>"
+            else:
+                body = f"<html><body>Results for: {html.escape(q)}</body></html>"
             return self._send(200, body, marker="reflected")
+
+        if path == "/api/products":
+            # A benign JSON endpoint. Planted A05 when CORS is wide open.
+            extra = {}
+            if self._has("cors_wildcard"):
+                extra["Access-Control-Allow-Origin"] = "*"
+            return self._send(200, '[{"id":1,"name":"Coffee"},{"id":2,"name":"Tea"}]',
+                             content_type="application/json",
+                             extra_headers=extra or None)
+
+        if path.rstrip("/") == "/uploads" and self._has("directory_listing"):
+            # Planted A05: directory index exposed under the web root.
+            body = ("<html><head><title>Index of /uploads</title></head><body>"
+                    "<h1>Index of /uploads</h1><ul>"
+                    "<li><a href='invoice-2023.pdf'>invoice-2023.pdf</a></li>"
+                    "<li><a href='backup.zip'>backup.zip</a></li></ul></body></html>")
+            return self._send(200, body)
 
         if path == self.cfg.admin_path:
             # Planted broken access control: no auth; discloses the flag path.
@@ -168,7 +224,7 @@ class _Handler(BaseHTTPRequestHandler):
             return self._send(200, self.cfg.flag_value, content_type="text/plain",
                              marker="flag")
 
-        if path == "/config.json":
+        if path == "/config.json" and self._has("sensitive_file"):
             # Planted sensitive file under web root.
             body = (
                 '{"app":"corner-shop","debug":true,'
@@ -178,15 +234,19 @@ class _Handler(BaseHTTPRequestHandler):
                              marker="sensitive")
 
         if path == "/error":
-            # Planted verbose error with a (fake) stack trace.
-            body = (
-                "<html><body><h2>500 Internal Server Error</h2><pre>"
-                "Traceback (most recent call last):\n"
-                '  File "/srv/app/handlers.py", line 42, in checkout\n'
-                "    total = cart.total()\n"
-                "AttributeError: 'NoneType' object has no attribute 'total'\n"
-                "</pre></body></html>"
-            )
+            if self._has("verbose_errors"):
+                # Planted A05: verbose error with a (fake) stack trace.
+                body = (
+                    "<html><body><h2>500 Internal Server Error</h2><pre>"
+                    "Traceback (most recent call last):\n"
+                    '  File "/srv/app/handlers.py", line 42, in checkout\n'
+                    "    total = cart.total()\n"
+                    "AttributeError: 'NoneType' object has no attribute 'total'\n"
+                    "</pre></body></html>"
+                )
+            else:
+                body = ("<html><body><h2>500 Internal Server Error</h2>"
+                        "<p>Something went wrong. Please try again later.</p></body></html>")
             return self._send(500, body, marker="verbose_error")
 
         return self._send(404, "Not Found", content_type="text/plain")

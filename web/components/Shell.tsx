@@ -12,6 +12,7 @@ import {
   History,
   LayoutDashboard,
   Menu,
+  ScanLine,
   Moon,
   Search,
   ShieldCheck,
@@ -31,6 +32,7 @@ export const useToast = () => useContext(ToastCtx);
 const NAV = [
   { group: "Operate", items: [
     { href: "/", label: "Overview", icon: LayoutDashboard },
+    { href: "/assessment", label: "Assessment", icon: ScanLine },
     { href: "/arena", label: "Live arena", icon: Swords },
     { href: "/engagements", label: "Engagements", icon: History },
   ] },
@@ -47,6 +49,7 @@ const NAV = [
 
 const TITLES: Record<string, string> = {
   "": "Overview",
+  assessment: "Assessment",
   arena: "Live arena",
   engagements: "Engagements",
   leaderboard: "Benchmarks",

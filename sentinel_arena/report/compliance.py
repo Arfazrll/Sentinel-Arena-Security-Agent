@@ -44,6 +44,26 @@ RULES: dict[str, dict] = {
         "nist_csf": ["PR.DS-01"], "iso27001": ["A.8.12", "A.8.9"],
         "pci_dss": ["2.2", "8.3.2"], "soc2": ["CC6.1"],
     },
+    "Session cookie set without HttpOnly/Secure flags": {
+        "rule_id": "SA-COOK-001", "cwe": ["CWE-1004", "CWE-614"], "effort": "S",
+        "nist_csf": ["PR.AA-05"], "iso27001": ["A.8.5"],
+        "pci_dss": ["6.2.4", "4.2.1"], "soc2": ["CC6.1"],
+    },
+    "Permissive CORS policy (Access-Control-Allow-Origin: *)": {
+        "rule_id": "SA-CORS-001", "cwe": ["CWE-942"], "effort": "S",
+        "nist_csf": ["PR.PS-01"], "iso27001": ["A.8.9"],
+        "pci_dss": ["6.2.4"], "soc2": ["CC6.1"],
+    },
+    "Technology and version disclosed in response headers": {
+        "rule_id": "SA-VER-001", "cwe": ["CWE-200"], "effort": "S",
+        "nist_csf": ["ID.RA-01"], "iso27001": ["A.8.8"],
+        "pci_dss": ["6.3.1", "2.2"], "soc2": ["CC7.1"],
+    },
+    "Directory listing exposed under the web root": {
+        "rule_id": "SA-DIR-001", "cwe": ["CWE-548", "CWE-200"], "effort": "S",
+        "nist_csf": ["PR.DS-01"], "iso27001": ["A.8.9"],
+        "pci_dss": ["2.2"], "soc2": ["CC6.1"],
+    },
 }
 
 _OWASP_FALLBACK = {

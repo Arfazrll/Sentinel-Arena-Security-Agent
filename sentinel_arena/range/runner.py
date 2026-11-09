@@ -55,12 +55,17 @@ def bring_up(
     host: str = "127.0.0.1",
 ) -> Range:
     """Start the range for a scenario and wait until it is healthy."""
+    # Serve exactly the weaknesses this scenario declares, so different scenarios
+    # produce genuinely different reports. The admin->flag discovery chain is
+    # always served by the app regardless, so every scenario stays solvable.
+    profile = {w.detect for w in scenario.weaknesses}
     config = AppConfig(
         token=token,
         flag_path=randomized.flag_path,
         admin_path=randomized.admin_path,
         flag_value=randomized.flag_value,
         credential=randomized.credential,
+        weaknesses=profile or set(),
         sink=sink,
         tick_provider=tick_provider,
     )
