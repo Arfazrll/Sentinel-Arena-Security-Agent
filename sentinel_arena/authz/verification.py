@@ -76,6 +76,27 @@ def _extract_meta_tokens(html: str) -> list[str]:
     return tokens
 
 
+class StdlibHttpClient:
+    """Dependency-free HTTP client (urllib) satisfying :class:`HttpClient`.
+
+    Used for localhost/self-hosted verification where pulling in httpx is
+    unnecessary. Short timeout, no redirects, small read cap.
+    """
+
+    def __init__(self, timeout: float = 5.0, max_bytes: int = 256 * 1024) -> None:
+        self.timeout = timeout
+        self.max_bytes = max_bytes
+
+    def get_text(self, url: str) -> str:
+        import urllib.request
+
+        req = urllib.request.Request(
+            url, headers={"User-Agent": "sentinel-arena-verifier/0.1"}
+        )
+        with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+            return resp.read(self.max_bytes).decode("utf-8", "replace")
+
+
 class OwnershipVerifier:
     """Checks a placed proof against the expected token for (user, host).
 

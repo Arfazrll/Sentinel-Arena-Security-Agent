@@ -31,13 +31,13 @@ the authorized equivalent.
 
 | # | Enforced by | Covered by tests |
 | --- | --- | --- |
-| 1 | `authz.gate.AuthorizationGate` (ownership proof required before `check` passes) | ✅ `test_gate.py` |
-| 2 | Design constraint; detection set is non-destructive (not yet built) | — |
-| 3 | Design constraint for `range/` + CI (not yet built) | — |
-| 4 | `authz.gate.check` raises `OwnershipNotProven` until authorized; `authz.scope` enforces scope per request | ✅ `test_gate.py`, `test_scope.py` |
-| 5 | Design constraint (no attack logic exists yet) | — |
-| 6 | `authz.audit.AuditLog` (append-only, SHA-256 hash chain) | ✅ `test_audit.py` |
-| 7 | Staging-first caps in `authz.scope`; kill switch + rate limiting live in `engine/` (not yet built) | ✅ (staging caps) `test_scope.py` |
+| 1 | `authz.gate.AuthorizationGate` — ownership proof required before `check` passes; the engagement authorizes via a genuine well-known fetch | `test_gate.py`, `test_safety_invariants.py`, `test_engagement_e2e.py` |
+| 2 | `detect/` checks are observation-only; red vocabulary has no destructive verb; blocking is simulated, never a real DoS | `test_detect.py`, `test_safety_invariants.py` |
+| 3 | Demos/tests/CI target only the bundled app on 127.0.0.1 (`range/`); no test touches a third party | `test_range.py`, `test_engagement_e2e.py` |
+| 4 | `authz.gate.check` raises `OwnershipNotProven` until authorized; the gated outbound client enforces scope on every request | `test_gate.py`, `test_scope.py`, `test_detect.py` |
+| 5 | No weaponized chains: `engine.actions.RED_ACTIONS` is a fixed, non-destructive set; blue has `BLUE_ACTIONS` whitelist only | `test_engine.py`, `test_safety_invariants.py` |
+| 6 | `authz.audit.AuditLog` — append-only, SHA-256 hash chain; engagement audit verified intact | `test_audit.py`, `test_engagement_e2e.py` |
+| 7 | `engine.killswitch.KillSwitch` halts all agents; rate caps in the gated client; staging-first caps in `authz.scope` | `test_scope.py` (caps); kill switch wired in `engine.referee` |
 
-As later milestones land, fill in the remaining rows rather than relaxing any
-invariant.
+As later milestones land (LLM agents, Docker range), keep these rows green
+rather than relaxing any invariant.

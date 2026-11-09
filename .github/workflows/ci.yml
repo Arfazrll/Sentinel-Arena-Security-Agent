@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+
+      - name: Install project (with dev extras)
+        run: uv pip install --system -e ".[dev]"
+
+      - name: Run tests (includes scripted-bot smoke tests + safety-invariant gate)
+        run: pytest -q
+
+  # A dedicated, named job so a removed safety invariant is impossible to miss
+  # in the checks list. It fails the build on its own.
+  safety-invariants:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+      - name: Set up Python 3.12
+        run: uv python install 3.12
+      - name: Install project
+        run: uv pip install --system -e ".[dev]"
+      - name: Enforce safety invariants
+        run: pytest -q tests/test_safety_invariants.py

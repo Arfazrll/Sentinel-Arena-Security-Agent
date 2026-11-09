@@ -23,6 +23,7 @@ from .scope import Environment, RateCap, Scope, ScopeDecision
 from .tokens import VerificationChallenge, expected_token, make_challenge
 from .verification import (
     OwnershipVerifier,
+    StdlibHttpClient,
     VerificationMethod,
     VerificationResult,
 )
@@ -49,6 +50,7 @@ __all__ = [
     "expected_token",
     "make_challenge",
     "OwnershipVerifier",
+    "StdlibHttpClient",
     "VerificationMethod",
     "VerificationResult",
 ]
